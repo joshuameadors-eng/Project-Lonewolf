@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+<title>Project LoneWolf Launcher</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- Parallax blur backdrop (visible with Parallax Blur theme) -->
+<div id="parallax-bg" aria-hidden="true">
+  <div class="parallax-orb parallax-orb-1"></div>
+  <div class="parallax-orb parallax-orb-2"></div>
+  <div class="parallax-orb parallax-orb-3"></div>
+  <div class="parallax-mesh"></div>
+</div>
+
+<!-- Navigation bar -->
+<nav id="main-nav" class="hidden">
+  <div class="nav-brand">
+    <div class="nav-wolf-logo" aria-label="Project LoneWolf">
+      <img src="assets/wolf-logo-base.png" alt="LoneWolf" class="wolf-logo-img">
+    </div>
+    <span class="nav-brand-text">Project LoneWolf</span>
+  </div>
+  <span class="nav-version" id="nav-version">v1.0</span>
+  <ul class="nav-links">
+    <li><a href="#home" data-page="home">Home</a></li>
+    <li><a href="#changelog" data-page="changelog">&#128196; Changelog</a></li>
+    <li><a href="#guides" data-page="guides">Help</a></li>
+    <li>
+      <button class="btn btn-ghost nav-settings-btn" id="nav-settings-btn" title="Settings">&#9881;</button>
+    </li>
+  </ul>
+</nav>
+
+<!-- App shell: scrollable content area -->
+<div id="app-shell">
+  <main id="app-root"></main>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

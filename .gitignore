@@ -1,0 +1,56 @@
+Remote/Staging/*.wim
+Remote/Staging/*.esd
+Remote/Staging/*.iso
+Remote/Staging/ISO/*.iso
+Remote/Staging/AMD64/*.wim
+Remote/Staging/ARM64/*.wim
+Remote/Staging/AMD64/**
+Remote/Staging/ARM64/**
+!Remote/Staging/AMD64/.gitkeep
+!Remote/Staging/ARM64/.gitkeep
+# Un-ignore sources/ so git descends into it, then re-ignore everything
+# inside it except the pre-injection sentinel (small text file, should travel
+# with the repo so builders can skip the 8-15 minute DISM step).
+!Remote/Staging/AMD64/sources/
+Remote/Staging/AMD64/sources/**
+!Remote/Staging/AMD64/sources/boot.wim.lw-injected
+Remote/Staging/Windows*/
+Remote/Staging/Payload/Tools/*.exe
+Remote/Staging/Payload/Tools/*.msi
+Remote/Staging/WinPE-OCs/*.cab
+node_modules/
+dist/
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# Electron / Node build junk
+out/
+release/
+*.log
+.DS_Store
+Thumbs.db
+# Large Windows images and split WIMs (do not ship in git)
+Remote/Staging/**/*.swm
+Remote/Staging/**/*.SWM
+Remote/Staging/**/*.iso
+Remote/Staging/**/*.ISO
+Remote/Staging/**/*.wim
+Remote/Staging/**/*.WIM
+Remote/Staging/**/*.esd
+Remote/Staging/PreSplit/
+Remote/Staging/ISO/
+Remote/Staging/*.ISO
+
+# .NET / provisioner build output
+**/bin/
+**/obj/
+provisioner/publish/
+provisioner/publish-staging/
+
+# Local docs and ad-hoc tools (do not ship)
+docs/
+tools/
+README.md

@@ -1,0 +1,40 @@
+appId: com.lonewolf.launcher
+productName: Project LoneWolf Launcher
+# Replace assets/icon.png with a proper 256x256 icon.ico before shipping
+icon: assets/icon.png
+
+directories:
+  output: dist
+
+win:
+  requestedExecutionLevel: asInvoker
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: LoneWolf-Launcher.exe
+
+portable:
+  artifactName: LoneWolf-Launcher.exe
+
+files:
+  - main.js
+  - preload.js
+  - assets/**
+  - src/**
+  - "!node_modules/**"
+  - "!dist/**"
+  - "!.git/**"
+
+extraResources:
+  - from: src/powershell
+    to: powershell
+    filter:
+      - "**/*.ps1"
+      - "VERSION.json"
+  - from: src/payload
+    to: payload
+  - from: provisioner/publish
+    to: provisioner
+    filter:
+      - "**/*"

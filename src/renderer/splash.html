@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self';">
+  <title>Project LoneWolf</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #010308;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      -webkit-user-select: none; user-select: none;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.1rem;
+      background-image: radial-gradient(ellipse 70% 65% at 50% 50%, rgba(34,211,238,.08) 0%, transparent 68%);
+    }
+    .logo-wrap {
+      position: relative;
+      width: 160px; height: 160px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .logo-glow {
+      position: absolute; inset: -32px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(34,211,238,.2) 0%, transparent 70%);
+      animation: pulseGlow 2.4s ease-in-out infinite;
+    }
+    .wolf-logo-ring {
+      width: 160px; height: 160px;
+      border-radius: 50%;
+      overflow: hidden;
+      background: #000;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .splash-wolf-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      mix-blend-mode: screen;
+    }
+    .title {
+      font-size: 1.45rem; font-weight: 700;
+      letter-spacing: -.02em; color: #e2e8f0;
+      text-align: center;
+    }
+    .title span { color: #22d3ee; }
+    .sub {
+      font-size: .7rem; color: #64748b;
+      text-align: center; letter-spacing: .1em;
+      text-transform: uppercase;
+      margin-top: -.4rem;
+    }
+    .loader {
+      width: 110px; height: 3px;
+      background: rgba(18,49,84,.9); border-radius: 2px; overflow: hidden;
+    }
+    .loader-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #22d3ee, #38bdf8);
+      animation: indeterminate 1.8s ease-in-out infinite;
+      width: 40%;
+    }
+    @keyframes pulseGlow {
+      0%, 100% { opacity: .65; transform: scale(1); }
+      50%       { opacity: 1;   transform: scale(1.1); }
+    }
+    @keyframes logoPulse {
+      0%, 100% { filter: drop-shadow(0 0 8px rgba(34,211,238,.3)); }
+      50%       { filter: drop-shadow(0 0 20px rgba(34,211,238,.65)); }
+    }
+    @keyframes indeterminate {
+      0%   { transform: translateX(-200%) scaleX(.3); }
+      50%  { transform: translateX(80%)  scaleX(.55); }
+      100% { transform: translateX(400%) scaleX(.3); }
+    }
+  </style>
+</head>
+<body>
+  <div class="logo-wrap">
+    <div class="logo-glow"></div>
+    <div class="wolf-logo-ring">
+      <img src="assets/wolf-logo-base.png" alt="LoneWolf" class="splash-wolf-img">
+    </div>
+  </div>
+
+  <div>
+    <div class="title">Project <span>LoneWolf</span></div>
+    <div class="sub">Launcher</div>
+  </div>
+  <div class="loader"><div class="loader-bar"></div></div>
+</body>
+</html>

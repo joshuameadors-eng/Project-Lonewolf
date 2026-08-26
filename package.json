@@ -1,0 +1,17 @@
+{
+  "name": "project-lonewolf-launcher",
+  "author": "FirstBase | Joshua Meadors",
+  "version": "5.4.2",
+  "description": "Project LoneWolf Launcher — FirstBase Deployment Suite GUI",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "provisioner:publish": "dotnet publish provisioner/LoneWolf.Provisioner/LoneWolf.Provisioner.csproj -c Release -r win-x64 --self-contained false -o provisioner/publish",
+    "prebuild": "npm run provisioner:publish",
+    "build": "electron-builder --win --x64 --config electron-builder.yml"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^26.15.3"
+  }
+}
