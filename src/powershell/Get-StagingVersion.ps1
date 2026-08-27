@@ -1,14 +1,12 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-  Reads version and staging-availability information from the deployment share.
-  Used by Project LoneWolf Launcher for smart update detection, changelog display,
-  and build-mode selection.
+  Reads ISO/WIM availability from the deployment share (ISO staging).
+  Product and launcher versioning are not read from the share.
 
 .DESCRIPTION
-  Registers credentials for the share, then reads VERSION.json from
-  Remote\Staging\VERSION.json. Falls back to the WIM last-write-time
-  if VERSION.json is absent.
+  Registers credentials for the share, then scans Staging for WIM and ISO files.
+  Does not require VERSION.json on the share (that file is not hosted there).
 
   Also scans for pre-staged WIM and ISO files and reports build-mode availability:
     buildMode = "wim"   -  pre-staged WIM found (fastest, preferred)
@@ -24,8 +22,7 @@
    "wimAvailable":true,"isoAvailable":true,
    "isoFile":"25h2_updates_6.18(amd64).ISO","buildMode":"wim"}
 
-  Place VERSION.json on the share at: Remote\Staging\VERSION.json
-  (see src\powershell\VERSION.json for the schema).
+  Share layout: Remote\Staging\ISO\ (and optional WIM / PreSplit). No launcher exe or VERSION.json.
 #>
 
 [CmdletBinding()]
@@ -62,7 +59,6 @@ if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
     Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
     $StagingRoot = Join-Path $ShareRoot 'Remote\Staging'
 }
-$versionFile = Join-Path $StagingRoot 'VERSION.json'
 # New fixed-path layout: Staging\AMD64\AMD64.wim  and  Staging\ISO\
 $wimPath     = Join-Path $StagingRoot "$wfUpper\$wfUpper.wim"
 $isoRoot     = Join-Path $StagingRoot 'ISO'
@@ -84,60 +80,11 @@ $output = [ordered]@{
     preSplitImageVersion = $null
 }
 
-# --- Read VERSION.json from share --------------------------------------------
-try {
-    if (Test-Path -LiteralPath $versionFile) {
-        $vj = Get-Content -Raw -LiteralPath $versionFile | ConvertFrom-Json
-
-        $output.version   = [string]$vj.version
-        $output.buildDate = [string]$vj.buildDate
-
-        # Read from new-style 'architectures' block (preferred)
-        if ($vj.PSObject.Properties['architectures']) {
-            $archBlock = $vj.architectures
-
-            # Pass through the full architectures block for GUI use
-            $output.architectures = $archBlock
-
-            # Per-arch build date for the requested workflow
-            $archEntry = $null
-            if ($archBlock.PSObject.Properties[$wfUpper]) {
-                $archEntry = $archBlock.$wfUpper
-            }
-            if ($archEntry -and $archEntry.wimBuildDate) {
-                $output.buildDate = [string]$archEntry.wimBuildDate
-            }
-        } else {
-            # Legacy schema: keys were lowercase 'amd64' / 'arm64'
-            $wfKey = $wfUpper.ToLower()
-            if ($vj.PSObject.Properties[$wfKey]) {
-                $wfData = $vj.$wfKey
-                if ($wfData -and $wfData.wimBuildDate) {
-                    $output.buildDate = [string]$wfData.wimBuildDate
-                }
-            }
-
-            # Synthesise an architectures block from legacy data so the GUI always
-            # has a consistent structure to read from
-            $synth = [ordered]@{}
-            foreach ($arch in @('AMD64','ARM64')) {
-                $legKey  = $arch.ToLower()
-                $legData = if ($vj.PSObject.Properties[$legKey]) { $vj.$legKey } else { $null }
-                $synth[$arch] = [ordered]@{
-                    wimBuildDate = if ($legData -and $legData.wimBuildDate) { [string]$legData.wimBuildDate } else { '' }
-                    payloadHash  = if ($legData -and $legData.payloadHash)  { [string]$legData.payloadHash  } else { '' }
-                    enabled      = ($arch -eq 'AMD64')  # conservative default
-                }
-            }
-            $output.architectures = $synth
-        }
-
-        # changelog is intentionally NOT passed through here — the staging:version
-        # IPC is used only for version/availability checks. Changelog is fetched
-        # separately via changelog:get (direct fs.readFile), which handles unescaped
-        # backslashes in paths like C:\ProgramData\FirstBase without JSON re-serialisation.
-    }
-} catch { }
+# Product/launcher versions come from bundled VERSION.json / GitHub latest.json.
+$output.architectures = [ordered]@{
+    AMD64 = [ordered]@{ wimBuildDate = ''; payloadHash = ''; enabled = $true }
+    ARM64 = [ordered]@{ wimBuildDate = ''; payloadHash = ''; enabled = $false }
+}
 
 # --- WIM availability + last-write-time fallback -----------------------------
 try {
@@ -157,6 +104,11 @@ try {
         $output.wimAvailable = $true
         $ts  = $foundWim.LastWriteTimeUtc
         $output.wimLastModified = $ts.ToString('o')
+        $wimYmd = $ts.ToString('yyyy-MM-dd')
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $wimYmd
+        }
+        $output.buildDate = $wimYmd
         if ($output.version -eq 'unknown') {
             $output.version = $ts.ToString('yyyyMMdd-HHmmss')
         }
@@ -182,6 +134,12 @@ try {
     if ($isoFiles.Count -gt 0) {
         $output.isoAvailable = $true
         $output.isoFile      = $isoFiles[0].Name
+        $isoYmd = $isoFiles[0].LastWriteTimeUtc.ToString('yyyy-MM-dd')
+        $output.isoLastWrite = $isoFiles[0].LastWriteTimeUtc.ToString('o')
+        $output.buildDate = $isoYmd
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $isoYmd
+        }
     }
 } catch { }
 

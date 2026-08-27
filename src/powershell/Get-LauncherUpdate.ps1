@@ -1,59 +1,34 @@
 <#
 .SYNOPSIS
-  Checks the remote share for a newer version of the LoneWolf Launcher.
+  Checks public GitHub Releases for a newer LoneWolf Launcher exe.
   Used by Project LoneWolf Launcher for self-update detection.
 
 .DESCRIPTION
-  Registers credentials for the share, reads VERSION.json from
-  Remote\Staging\VERSION.json, and compares launcherVersion against the
-  running launcher's version. Outputs a single JSON object  -  never throws
-  or exits non-zero for network/parse errors.
+  Reads latest.json from the public Project-Lonewolf-Releases source tree
+  (raw.githubusercontent.com, unauthenticated). Setup comes from Releases.
+  Does not use the ISO staging share for versioning or exe.
 
 .OUTPUTS
-  If update available:
-  {"updateAvailable":true,"currentVersion":"1.0.0","latestVersion":"1.1.0",
-   "exeName":"LoneWolf-Launcher-portable.exe",
-   "exePath":"\\\\WIN-HQ5JDEACV3S\\Images\\FB Image Creation\\Remote\\LoneWolf-Launcher-portable.exe"}
-
-  If up to date or share unreachable:
-  {"updateAvailable":false,"currentVersion":"1.0.0","latestVersion":"1.0.0",
-   "exeName":"LoneWolf-Launcher-portable.exe","exePath":null}
+  JSON: updateAvailable, currentVersion, latestVersion, exeName, exePath (HTTPS URL).
 #>
 
 param(
-    [string]$ShareRoot     = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
-    [string]$ShareUser     = 'Reflect',
-    [string]$SharePassword = 'mer*HWE0upt*rqe@dud',
-    [string]$CurrentVersion
+    [string]$CurrentVersion,
+    [string]$LatestJsonUrl = 'https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json'
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-# --- Share authentication -----------------------------------------------------
-function Connect-ShareCredentials {
-    param([string]$ShareHost, [string]$User, [string]$Pass)
-    try {
-        $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
-        if (Test-Path -LiteralPath $cmdkey) {
-            & $cmdkey /delete:$ShareHost 2>$null | Out-Null
-            & $cmdkey /add:$ShareHost /user:$User /pass:$Pass 2>&1 | Out-Null
-        }
-    } catch { }
-}
-
-$shareHost = 'WIN-HQ5JDEACV3S'
-if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
-Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
-
-# --- SemVer comparison --------------------------------------------------------
 function Compare-SemVer {
     param([string]$a, [string]$b)
-    $va = [version]($a -replace '[^0-9.]','')
-    $vb = [version]($b -replace '[^0-9.]','')
-    return $va.CompareTo($vb)  # >0 means $a > $b
+    try {
+        $va = [version]($a -replace '[^0-9.]', '')
+        $vb = [version]($b -replace '[^0-9.]', '')
+        return $va.CompareTo($vb)
+    } catch {
+        return 0
+    }
 }
-
-$versionFile = Join-Path $ShareRoot 'Remote\Staging\VERSION.json'
 
 $output = [ordered]@{
     updateAvailable = $false
@@ -63,48 +38,41 @@ $output = [ordered]@{
     currentVersion  = $CurrentVersion
     latestVersion   = $CurrentVersion
     shareScriptVersion = $null
-    exeName         = 'LoneWolf-Launcher.exe'
+    payloadVersion  = $null
+    exeName         = 'LoneWolf-Launcher-Setup.exe'
     exePath         = $null
+    source          = 'github-public-release'
+    channel         = $null
 }
 
 try {
-    if (Test-Path -LiteralPath $versionFile) {
-        $vj = Get-Content -Raw -LiteralPath $versionFile | ConvertFrom-Json
+    $headers = @{ 'User-Agent' = 'LoneWolf-Launcher-UpdateCheck' }
+    $vj = Invoke-RestMethod -Uri $LatestJsonUrl -Headers $headers -Method Get
+    if ($vj -is [string]) {
+        $vj = ($vj.TrimStart([char]0xFEFF).Trim() | ConvertFrom-Json)
+    }
+    $latestVersion = if ($vj.launcherVersion) { [string]$vj.launcherVersion } else { $CurrentVersion }
+    $payload = if ($vj.payloadVersion) { [string]$vj.payloadVersion } else { $null }
+    $exeName = 'LoneWolf-Launcher-Setup.exe'
+    $exeUrl = $null
+    if ($vj.urls -and $vj.urls.setup) { $exeUrl = [string]$vj.urls.setup }
+    else {
+        $exeUrl = 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest/download/LoneWolf-Launcher-Setup.exe'
+    }
 
-        # Read launcherVersion  -  fall back to currentVersion if field is absent
-        $latestVersion = if ($vj.PSObject.Properties['launcherVersion'] -and $vj.launcherVersion) {
-            [string]$vj.launcherVersion
-        } else {
-            $CurrentVersion
-        }
+    $output.latestVersion = $latestVersion
+    $output.exeName = $exeName
+    $output.payloadVersion = $payload
+    $output.shareScriptVersion = $payload
+    $output.channel = if ($vj.channel) { [string]$vj.channel } else { 'release' }
 
-        $exeName = if ($vj.PSObject.Properties['launcherExeName'] -and $vj.launcherExeName) {
-            [string]$vj.launcherExeName
-        } else {
-            'LoneWolf-Launcher.exe'
-        }
-
-        $shareScript = if ($vj.PSObject.Properties['version'] -and $vj.version) {
-            [string]$vj.version
-        } else {
-            $null
-        }
-
-        $output.latestVersion = $latestVersion
-        $output.exeName       = $exeName
-        $output.shareScriptVersion = $shareScript
-
-        if ($latestVersion -and $CurrentVersion) {
-            $cmp = Compare-SemVer $latestVersion $CurrentVersion
-            if ($cmp -gt 0) {
-                # Share official is newer than this build - update available.
-                $output.updateAvailable = $true
-                $output.exePath         = Join-Path $ShareRoot "Remote\$exeName"
-            } elseif ($cmp -lt 0) {
-                # This build is ahead of share official - Dev build flag.
-                $output.launcherAhead = $true
-                $output.devBuild = $true
-            }
+    if ($latestVersion -and $CurrentVersion) {
+        $cmp = Compare-SemVer $latestVersion $CurrentVersion
+        if ($cmp -gt 0) {
+            $output.updateAvailable = $true
+            $output.exePath = $exeUrl
+        } elseif ($cmp -lt 0) {
+            $output.launcherAhead = $true
         }
     }
 } catch {

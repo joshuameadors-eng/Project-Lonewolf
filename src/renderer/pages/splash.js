@@ -8,8 +8,11 @@
       const v = await window.api.getVersion()
       if (v) versionStr = `Launcher v${v}`
       try {
-        const st = await window.api.getVersionStatus()
-        if (st && st.isDevBuild && v) versionStr = `Launcher v${v} DEV`
+        const packed = await window.api.getDevInfo()
+        if (!(packed && packed.isPackaged)) {
+          const st = await window.api.getVersionStatus()
+          if (st && st.isDevBuild && !st.isPackaged && v) versionStr = `Launcher v${v} DEV`
+        }
       } catch (_) {}
     } catch (_) {}
 

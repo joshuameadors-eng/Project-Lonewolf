@@ -53,4 +53,3 @@ provisioner/publish-staging/
 # Local docs and ad-hoc tools (do not ship)
 docs/
 tools/
-README.md

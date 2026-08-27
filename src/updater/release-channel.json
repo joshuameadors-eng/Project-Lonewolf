@@ -1,0 +1,12 @@
+{
+  "owner": "joshuameadors-eng",
+  "repo": "Project-Lonewolf-Releases",
+  "latestReleaseUrl": "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
+  "apiLatestUrl": "https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
+  "manifestUrl": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json",
+  "contentsApiUrl": "https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/contents/latest.json",
+  "setupAsset": "LoneWolf-Launcher-Setup.exe",
+  "portablePath": "bin/LoneWolf-Launcher.exe",
+  "payloadAsset": "FirstBase-payload.zip",
+  "manifestAsset": "latest.json"
+}

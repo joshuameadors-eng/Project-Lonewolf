@@ -193,13 +193,15 @@ async function initVersion() {
     el.classList.remove('nav-version-dev')
     el.removeAttribute('title')
     try {
+      const packed = await window.api.getDevInfo()
+      if (packed && packed.isPackaged) return
       const st = await window.api.getVersionStatus()
-      if (st && st.isDevBuild) {
+      if (st && st.isDevBuild && !st.isPackaged) {
         el.innerHTML = `v${v} <span class="nav-dev-pill">DEV</span>`
         el.classList.add('nav-version-dev')
         const bits = []
-        if (st.official) bits.push(`launcher share v${st.official}`)
-        if (st.officialScript) bits.push(`script share v${st.officialScript}`)
+        if (st.official) bits.push(`launcher GitHub v${st.official}`)
+        if (st.officialScript) bits.push(`payload GitHub v${st.officialScript}`)
         const off = bits.length ? ` (${bits.join(', ')})` : ''
         const why = []
         if (st.launcherAhead) why.push('launcher ahead')
@@ -974,6 +976,15 @@ const settingsModal = (() => {
             </div>
 
             <div class="settings-section">
+              <div class="settings-section-title">Updates</div>
+              <p class="settings-help">Quick Update pulls scripts/payload from the public GitHub source tree (not Setup.exe). Launcher Update installs a new exe from GitHub Releases. They are separate. The ISO share is not used for launcher versioning.</p>
+              <div class="settings-row settings-row--btns">
+                <button class="btn-dev-sm" id="settings-quick-update" title="Payload and scripts only; does not replace LoneWolf-Launcher.exe">Quick Update</button>
+                <button class="btn-dev-sm" id="settings-launcher-update" title="Download installer/exe from public Releases">Launcher Update</button>
+              </div>
+            </div>
+
+            <div class="settings-section">
               <div class="settings-section-title">Guide</div>
               <div class="settings-row">
                 <label for="settings-show-guide-toggle">Show Getting Started on startup</label>
@@ -1070,6 +1081,42 @@ const settingsModal = (() => {
       setLwSettings(s)
       const devOverride = el.querySelector('#settings-override-tutorial')
       if (devOverride) devOverride.checked = this.checked
+    })
+
+    el.querySelector('#settings-quick-update').addEventListener('click', async () => {
+      const btn = el.querySelector('#settings-quick-update')
+      btn.disabled = true
+      try {
+        const res = await window.api.applyQuickUpdate()
+        if (res && res.ok && res.skippedDownload) {
+          window.toast(res.message || 'Using local src/ for destage (dev). No GitHub payload pull.', 'info')
+        } else if (res && res.ok) {
+          window.toast('Quick Update applied (scripts/payload only). Restart the launcher if a running script looks stale.', 'ok')
+        } else {
+          window.toast((res && res.error) ? res.error : 'Quick Update failed', 'error')
+        }
+      } catch (e) {
+        window.toast(e.message, 'error')
+      } finally {
+        btn.disabled = false
+      }
+    })
+
+    el.querySelector('#settings-launcher-update').addEventListener('click', async () => {
+      const btn = el.querySelector('#settings-launcher-update')
+      btn.disabled = true
+      try {
+        const res = await window.api.installUpdate({})
+        if (res && res.reason === 'dev-mode') {
+          window.toast('Launcher Update skipped — npm start / destage uses this checkout, not a new exe.', 'info')
+        } else if (!res || !res.ok) {
+          window.toast((res && res.error) ? res.error : 'Launcher Update failed', 'error')
+        }
+      } catch (e) {
+        window.toast(e.message, 'error')
+      } finally {
+        btn.disabled = false
+      }
     })
 
     const themeSelect = el.querySelector('#settings-theme-select')
@@ -1174,45 +1221,76 @@ function showUpdateBanner(result) {
   const existing = document.getElementById('update-banner')
   if (existing) existing.remove()
 
+  const launcher = !!(result && result.launcherUpdateAvailable)
+  const payload = !!(result && result.payloadUpdateAvailable)
+  if (!launcher && !payload) return
+
   const banner = document.createElement('div')
   banner.id = 'update-banner'
   banner.className = 'update-banner'
+  const bits = []
+  if (launcher) {
+    bits.push('Launcher <strong>v' + (_cachedAppVersion || result.currentVersion || '?') + '</strong> &#8594; <strong>v' + (result.latestLauncherVersion || result.latestVersion || '?') + '</strong>')
+  }
+  if (payload) {
+    bits.push('Payload/scripts <strong>v' + (result.currentPayloadVersion || '?') + '</strong> &#8594; <strong>v' + (result.latestPayloadVersion || '?') + '</strong> (Quick Update, no new exe)')
+  }
   banner.innerHTML =
     '<span class="ub-icon">&#9632;</span>' +
-    '<span class="ub-msg">Launcher update available: ' +
-      '<strong>v' + (_cachedAppVersion || result.currentVersion || '?') + '</strong>' +
-      ' &#8594; ' +
-      '<strong>v' + (result.latestVersion || '?') + '</strong>' +
-    '</span>' +
-    '<button class="ub-btn-update btn">Update Now</button>' +
+    '<span class="ub-msg">' + bits.join(' &middot; ') + '</span>' +
+    (payload ? '<button class="ub-btn-quick btn" type="button">Quick Update</button>' : '') +
+    (launcher ? '<button class="ub-btn-update btn" type="button">Launcher Update</button>' : '') +
     '<button class="ub-btn-dismiss" title="Dismiss">&#215;</button>'
 
   document.body.appendChild(banner)
 
-  banner.querySelector('.ub-btn-update').addEventListener('click', async () => {
-    if (!pendingUpdateInfo) return
-    const btn = banner.querySelector('.ub-btn-update')
-    btn.disabled = true
-    btn.textContent = 'Updating\u2026'
-    try {
-      const res = await window.api.installUpdate({ exePath: pendingUpdateInfo.exePath })
-      if (!res || !res.ok) {
-        if (res && res.reason === 'dev-mode') {
-          window.toast('Update skipped — dev mode (check %TEMP%\\lonewolf-installer.log)', 'info')
+  const quickBtn = banner.querySelector('.ub-btn-quick')
+  if (quickBtn) {
+    quickBtn.addEventListener('click', async () => {
+      quickBtn.disabled = true
+      quickBtn.textContent = 'Updating\u2026'
+      try {
+        const res = await window.api.applyQuickUpdate()
+        if (res && res.ok) {
+          window.toast('Quick Update applied. The launcher exe was not replaced.', 'ok')
+          banner.remove()
         } else {
-          const errMsg = (res && res.error) ? res.error : 'Unknown error'
-          window.toast('Update failed: ' + errMsg, 'error')
+          window.toast((res && (res.error || res.message)) || 'Quick Update failed', 'error')
+          quickBtn.disabled = false
+          quickBtn.textContent = 'Quick Update'
         }
-        banner.remove()
-        return
+      } catch (e) {
+        window.toast(e.message, 'error')
+        quickBtn.disabled = false
+        quickBtn.textContent = 'Quick Update'
       }
-      // On ok:true the app will quit — nothing more to do
-    } catch (e) {
-      window.toast('Update failed: ' + e.message, 'error')
-      btn.disabled = false
-      btn.textContent = 'Update Now'
-    }
-  })
+    })
+  }
+
+  const launchBtn = banner.querySelector('.ub-btn-update')
+  if (launchBtn) {
+    launchBtn.addEventListener('click', async () => {
+      launchBtn.disabled = true
+      launchBtn.textContent = 'Updating\u2026'
+      try {
+        const res = await window.api.installUpdate({})
+        if (!res || !res.ok) {
+          if (res && res.reason === 'dev-mode') {
+            window.toast('Launcher Update skipped — destage from src/ in this checkout.', 'info')
+          } else {
+            window.toast((res && res.error) ? res.error : 'Unknown error', 'error')
+          }
+          launchBtn.disabled = false
+          launchBtn.textContent = 'Launcher Update'
+          return
+        }
+      } catch (e) {
+        window.toast('Update failed: ' + e.message, 'error')
+        launchBtn.disabled = false
+        launchBtn.textContent = 'Launcher Update'
+      }
+    })
+  }
 
   banner.querySelector('.ub-btn-dismiss').addEventListener('click', () => {
     banner.remove()
@@ -1220,10 +1298,19 @@ function showUpdateBanner(result) {
   })
 }
 
+function toastHqBlocked(result) {
+  if (!result || !result.hqBlocked) return false
+  const msg = result.error || result.message ||
+    'Not on FirstbaseHQ. GitHub updates and share ISOs are blocked off-site.'
+  window.toast(msg, 'error', 8000)
+  return true
+}
+
 async function checkForUpdate() {
   try {
     const result = await window.api.checkForUpdate()
-    if (result && result.updateAvailable && !updateBannerDismissed) {
+    if (toastHqBlocked(result)) return
+    if (result && (result.launcherUpdateAvailable || result.payloadUpdateAvailable) && !updateBannerDismissed) {
       pendingUpdateInfo = result
       showUpdateBanner(result)
     }
@@ -1256,48 +1343,13 @@ async function runStartupUpdateCheck() {
     ])
   } catch (_) {}
 
-  if (result && result.updateAvailable) {
+  overlay.remove()
+  if (toastHqBlocked(result)) return
+  // Never block the app for payload/script updates. Launcher updates are offered
+  // on the banner — they are not applied as a side effect of Quick Update.
+  if (result && (result.launcherUpdateAvailable || result.payloadUpdateAvailable) && !updateBannerDismissed) {
     pendingUpdateInfo = result
-    overlay.innerHTML = `
-      <div style="text-align:center;max-width:420px;padding:0 2rem">
-        <div style="font-size:2rem;margin-bottom:1rem">&#9650;</div>
-        <h2 style="color:var(--t1);font-size:1.3rem;margin:0 0 .6rem">Update Required</h2>
-        <p style="color:var(--t2);font-size:.9rem;margin:0 0 1.5rem;line-height:1.5">
-          A new version of the launcher is available.<br>
-          <strong style="color:var(--t1)">v${_cachedAppVersion || result.currentVersion || '?'} &rarr; v${result.latestVersion || '?'}</strong><br><br>
-          Please update before continuing.
-        </p>
-        <button id="startup-update-btn" class="btn" style="min-width:160px">Update Now</button>
-      </div>
-    `
-    overlay.querySelector('#startup-update-btn').addEventListener('click', async () => {
-      const btn = overlay.querySelector('#startup-update-btn')
-      btn.disabled = true
-      btn.textContent = 'Updating...'
-      try {
-        const res = await window.api.installUpdate({ exePath: pendingUpdateInfo.exePath })
-        if (!res || !res.ok) {
-          if (res && res.reason === 'dev-mode') {
-            btn.disabled = false
-            btn.textContent = 'Update Now'
-            overlay.remove()
-          } else {
-            btn.disabled = false
-            btn.textContent = 'Update Now'
-            const errMsg = (res && res.error) ? res.error : 'Unknown error'
-            window.toast('Update failed: ' + errMsg, 'error')
-          }
-        }
-        // If ok:true app will quit — nothing to do
-      } catch (e) {
-        btn.disabled = false
-        btn.textContent = 'Update Now'
-        window.toast('Update failed: ' + e.message, 'error')
-      }
-    })
-    // Do NOT remove overlay — user MUST update
-  } else {
-    overlay.remove()
+    showUpdateBanner(result)
   }
 }
 

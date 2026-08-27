@@ -24,6 +24,7 @@ public sealed class BuildContext
     public string? ScriptVersion { get; init; }
     public string? ShareLauncherVersion { get; init; }
     public string? ShareScriptVersion { get; init; }
+    public string? ImageBuildDate { get; init; }
     public string? SharedWimMount { get; set; }
     public long SharedWimSourceBytes { get; set; }
     public string? StagingWindowsDir { get; set; }
@@ -53,9 +54,12 @@ public sealed class BuildEngine
         Directory.CreateDirectory(espCache);
         Directory.CreateDirectory(overlayCache);
 
-        var stagingVersion = ReadStagingVersion(opts);
+        var stagingVersion = ReadPayloadVersion(opts);
         var stagingRoot = GetStagingRoot(opts);
         var stagingWindowsDir = Path.Combine(stagingRoot, profile.Arch ?? "AMD64");
+        string? imageBuildDate = null;
+        if (!string.IsNullOrWhiteSpace(opts.ResolvedSource.IsoPath) && File.Exists(opts.ResolvedSource.IsoPath))
+            imageBuildDate = File.GetLastWriteTimeUtc(opts.ResolvedSource.IsoPath).ToString("yyyy-MM-dd");
 
         var ctx = new BuildContext
         {
@@ -72,6 +76,7 @@ public sealed class BuildEngine
             ScriptVersion = opts.ScriptVersion,
             ShareLauncherVersion = opts.ShareLauncherVersion,
             ShareScriptVersion = opts.ShareScriptVersion,
+            ImageBuildDate = imageBuildDate,
             StagingWindowsDir = Directory.Exists(stagingWindowsDir) ? stagingWindowsDir : null,
             StartnetPath = Path.Combine(contentRoot, "Deploy", "WinPE-Startnet.cmd"),
             WpeOcPath = opts.WpeOcPath,
@@ -412,7 +417,7 @@ public sealed class BuildEngine
         _emit.Phase(diskNumber, "bcd-build");
         await DiskPartitioner.RebuildEspBcd(espRoot, _emit, diskNumber, ct).ConfigureAwait(false);
 
-        await WriteVersionStampAsync(dataRoot, ctx, diskNumber, ct).ConfigureAwait(false);
+        await WriteVersionStampAsync(dataRoot, ctx, diskNumber, opts.OverlayOnly, ct).ConfigureAwait(false);
 
         // Fail loudly if the ESP boot chain is incomplete rather than shipping a stick that dies at
         // boot with 0xc000000f. Validated last so any earlier step that failed to place boot.wim,
@@ -488,7 +493,7 @@ public sealed class BuildEngine
         if (data == null)
             throw new InvalidOperationException($"No data partition on disk {diskNumber}");
         await ApplyOverlayAsync(diskNumber, esp, data, ctx, ct).ConfigureAwait(false);
-        await WriteVersionStampAsync(data, ctx, diskNumber, ct).ConfigureAwait(false);
+        await WriteVersionStampAsync(data, ctx, diskNumber, opts.OverlayOnly, ct).ConfigureAwait(false);
     }
 
     private async Task ApplyOverlayAsync(int diskNumber, string? espRoot, string dataRoot, BuildContext ctx, CancellationToken ct)
@@ -1363,20 +1368,37 @@ public sealed class BuildEngine
         }
     }
 
-    private static async Task WriteVersionStampAsync(string dataRoot, BuildContext ctx, int diskNumber, CancellationToken ct)
+    private static async Task WriteVersionStampAsync(string dataRoot, BuildContext ctx, int diskNumber, bool overlayOnly, CancellationToken ct)
     {
+        var stampImageDate = ctx.ImageBuildDate;
+        var existingPath = Path.Combine(dataRoot, "FirstBase", "LW_VERSION.json");
+        if (overlayOnly && File.Exists(existingPath))
+        {
+            try
+            {
+                using var existing = JsonDocument.Parse(await File.ReadAllTextAsync(existingPath, ct).ConfigureAwait(false));
+                if (existing.RootElement.TryGetProperty("imageBuildDate", out var ibd) && ibd.ValueKind == JsonValueKind.String)
+                    stampImageDate = ibd.GetString();
+                else if (existing.RootElement.TryGetProperty("wimBuildDate", out var wbd) && wbd.ValueKind == JsonValueKind.String)
+                    stampImageDate = wbd.GetString();
+            }
+            catch { /* keep current ISO date only for full rebuilds */ }
+        }
         var stamp = JsonSerializer.Serialize(new
         {
             builtBy = "LoneWolfLauncher",
             workflowType = ctx.WorkflowType,
             version = ctx.StagingVersion,
             scriptVersion = string.IsNullOrWhiteSpace(ctx.ScriptVersion) ? ctx.StagingVersion : ctx.ScriptVersion,
+            payloadVersion = string.IsNullOrWhiteSpace(ctx.ScriptVersion) ? ctx.StagingVersion : ctx.ScriptVersion,
             builtAt = DateTime.UtcNow.ToString("o"),
             diskNumber,
             devBuild = ctx.DevBuild,
             launcherVersion = ctx.LauncherVersion,
             shareLauncherVersion = ctx.ShareLauncherVersion,
-            shareScriptVersion = ctx.ShareScriptVersion
+            shareScriptVersion = ctx.ShareScriptVersion,
+            imageBuildDate = stampImageDate,
+            wimBuildDate = stampImageDate
         });
         var firstBaseRoot = Path.Combine(dataRoot, "FirstBase");
         Directory.CreateDirectory(firstBaseRoot);
@@ -1401,14 +1423,22 @@ public sealed class BuildEngine
             ? Path.Combine(opts.LocalProjectRoot, "Staging")
             : ConnectDeploymentShare.GetStagingRoot(opts.ShareRoot ?? ProvisioningConstants.DefaultShareRoot);
 
-    private static string ReadStagingVersion(BuildOptions opts)
+    private static string ReadPayloadVersion(BuildOptions opts)
     {
+        if (!string.IsNullOrWhiteSpace(opts.ScriptVersion))
+            return opts.ScriptVersion;
         try
         {
-            var stagingRoot = GetStagingRoot(opts);
-            var vf = Path.Combine(stagingRoot, "VERSION.json");
-            if (!File.Exists(vf)) return "unknown";
-            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(vf));
+            var bundled = Path.Combine(opts.AppResourcesPath, "powershell", "VERSION.json");
+            if (!File.Exists(bundled))
+                bundled = Path.Combine(opts.AppResourcesPath, "VERSION.json");
+            if (!File.Exists(bundled)) return "unknown";
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(bundled));
+            if (doc.RootElement.TryGetProperty("payloadVersion", out var pv))
+            {
+                var s = pv.GetString();
+                if (!string.IsNullOrWhiteSpace(s)) return s;
+            }
             return doc.RootElement.TryGetProperty("version", out var v) ? v.GetString() ?? "unknown" : "unknown";
         }
         catch { return "unknown"; }

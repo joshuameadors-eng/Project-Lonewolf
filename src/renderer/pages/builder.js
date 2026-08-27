@@ -112,9 +112,6 @@
   let destroyConfirmed = false    // user clicked Confirm in the destruction warning modal
   let diskStates = {}    // disk number -> { phase, pct, done, failed, error }
   let diskModes  = {}    // disk number -> 'full' | 'overlay'
-  // Release builds have no per-disk mode choice — every stick is a full rebuild.
-  // The toggle is a dev-only affordance; default to release until dev-info answers.
-  let isPackagedBuild = true
   let currentBuildDisks = []  // disk numbers in the active build (drives the overall-progress bar)
   let stagingVersion = null
   let stagingWimBuildDate = null
@@ -351,14 +348,19 @@
       if (isStickDevBuild(disk, stagingVersion)) {
         const ver = disk.lwLauncherVersion || disk.lwVersion || ''
         const verLabel = ver ? ` v${escHtml(ver)}` : ''
-        return `<span class="usb-lw-badge lw-badge-dev" title="Dev build: launcher/script ahead of share official VERSION.json">DEV${verLabel}</span>`
+        return `<span class="usb-lw-badge lw-badge-dev" title="Dev destage: launcher/script ahead of GitHub latest.json">DEV${verLabel}</span>`
       }
-      if (stagingVersion && disk.lwVersion === stagingVersion) {
+      if (stickImageIsOlderThanCurrent(disk)) {
+        const from = disk.lwImageBuildDate || disk.lwWimBuildDate || '?'
+        const to = stagingBuildDate() || '?'
+        return `<span class="usb-lw-badge lw-badge-warn" title="Share ISO is newer than the image on this stick. Full Rebuild is selected by default; Quick Update is still allowed.">&#9888; Image older (${escHtml(from)} &#8594; ${escHtml(to)})</span>`
+      }
+      if (stagingVersion && (disk.lwScriptVersion || disk.lwVersion) === stagingVersion) {
         return `<span class="usb-lw-badge lw-badge-ok">&#10003; Up to Date</span>`
       }
-      const from = disk.lwVersion || '?'
+      const from = disk.lwScriptVersion || disk.lwVersion || '?'
       const to   = stagingVersion || '?'
-      return `<span class="usb-lw-badge lw-badge-warn">&#9888; Outdated (v${escHtml(from)} &#8594; v${escHtml(to)})</span>`
+      return `<span class="usb-lw-badge lw-badge-warn">&#9888; Scripts behind (v${escHtml(from)} &#8594; v${escHtml(to)})</span>`
     }
     return `<span class="usb-lw-badge lw-badge-gray">Unformatted</span>`
   }
@@ -463,6 +465,33 @@
 
   function stagingBuildDate() {
     return stagingWimBuildDate || ''
+  }
+
+  function stickImageDate(disk) {
+    if (!disk) return ''
+    return String(disk.lwImageBuildDate || disk.lwWimBuildDate || '').trim()
+  }
+
+  function stickImageIsOlderThanCurrent(disk) {
+    const fn = window.LoneWolfStickImageIsOlder
+    if (typeof fn !== 'function') return false
+    return !!fn(stickImageDate(disk), stagingBuildDate())
+  }
+
+  function recommendModeForDisk(disk) {
+    const fn = window.LoneWolfRecommendUsbBuildMode
+    if (typeof fn === 'function') {
+      return fn({
+        isLoneWolfDisk: disk && disk.isLoneWolfDisk === true,
+        usesSourcePicker: usesSourcePicker(),
+        stickImageDate: stickImageDate(disk),
+        currentImageDate: stagingBuildDate()
+      })
+    }
+    if (usesSourcePicker() || !(disk && disk.isLoneWolfDisk === true)) {
+      return { mode: 'full', overlayAllowed: false, imageOlder: false }
+    }
+    return { mode: 'overlay', overlayAllowed: true, imageOlder: false }
   }
 
   function fixedShareSubpath() {
@@ -819,7 +848,13 @@
       const sharePromise = showShareSources
         ? window.api.scanShareSources(wfType).catch(() => [])
         : Promise.resolve([])
-      const [local, share] = await Promise.all([localPromise, sharePromise])
+      const [local, shareRaw] = await Promise.all([localPromise, sharePromise])
+      if (shareRaw && !Array.isArray(shareRaw) && shareRaw.hqBlocked) {
+        window.toast(shareRaw.error || 'Not on FirstbaseHQ. Share ISOs are blocked off-site.', 'error', 8000)
+      }
+      const share = Array.isArray(shareRaw)
+        ? shareRaw
+        : (shareRaw && Array.isArray(shareRaw.entries) ? shareRaw.entries : [])
       // Local disks first. Share ISOs only appear when Show share is on.
       const merged = []
       const seen = new Set()
@@ -918,25 +953,30 @@
     }
   }
 
-  // Single source of truth for a disk's build mode. Overlay is dev-only; a release
-  // build always does a full rebuild regardless of any mode left in diskModes.
+  // LoneWolf sticks: Full Rebuild vs Quick Update on packaged and npm start.
+  // Media Creator has no overlay path.
   function effectiveDiskMode(disk) {
-    if (isPackagedBuild || usesSourcePicker()) return 'full'
-    return diskModes[disk.number] || 'full'
+    if (usesSourcePicker()) return 'full'
+    const rec = recommendModeForDisk(disk)
+    if (!rec.overlayAllowed) return 'full'
+    return diskModes[disk.number] || rec.mode || 'full'
   }
 
   function renderModeToggle(disk) {
     // Media Creator writes a whole vendor ISO to the stick — there is no overlay
     // to refresh, so every disk is a full rebuild and the toggle is hidden.
     if (usesSourcePicker()) return ''
-    if (isPackagedBuild) return ''
-    if (disk.isLoneWolfDisk !== true) return ''
-    const mode = diskModes[disk.number] || 'full'
+    const rec = recommendModeForDisk(disk)
+    if (!rec.overlayAllowed) return ''
+    const mode = diskModes[disk.number] || rec.mode || 'full'
+    const hint = rec.imageOlder
+      ? '<div class="usb-mode-hint">Share ISO is newer than this stick. Full Rebuild is selected; Quick Update is still allowed.</div>'
+      : ''
     return `
       <div class="usb-mode-toggle">
         <button class="mode-btn${mode === 'full'    ? ' active' : ''}" data-disk="${disk.number}" data-mode="full">Full Rebuild</button>
         <button class="mode-btn${mode === 'overlay' ? ' active' : ''}" data-disk="${disk.number}" data-mode="overlay">Quick Update</button>
-      </div>`
+      </div>${hint}`
   }
 
   function renderUsbCard(disk) {
@@ -1061,18 +1101,8 @@
       selected.add(d.number)
 
       if (diskModes[d.number] === undefined) {
-        if (usesSourcePicker()) {
-          // Media Creator has no overlay path — a previously LoneWolf-built stick
-          // must still be re-imaged from the selected ISO.
-          diskModes[d.number] = 'full'
-        } else if (d.isLoneWolfDisk === true) {
-          // Versions match → Quick Update (refresh overlay only)
-          // Versions differ → Full Rebuild (new Windows build or major change)
-          diskModes[d.number] = (stagingVersion && d.lwVersion === stagingVersion) ? 'overlay' : 'full'
-        } else {
-          // Fresh / non-LW disk → always Full Rebuild
-          diskModes[d.number] = 'full'
-        }
+        // Script-only destage → Quick Update. Stick image older than share ISO → Full Rebuild default.
+        diskModes[d.number] = recommendModeForDisk(d).mode
       }
     })
 
@@ -1388,7 +1418,7 @@
       const mode      = effectiveDiskMode(d)
       const modeLabel = mode === 'overlay' ? 'Quick Update' : 'Full Rebuild'
       // Only dev builds can choose a mode, so only they need it named per disk.
-      const modeSuffix = (isPackagedBuild || usesSourcePicker()) ? '' : ` &nbsp;·&nbsp; ${modeLabel}`
+      const modeSuffix = usesSourcePicker() ? '' : ` &nbsp;·&nbsp; ${modeLabel}`
       return `<div class="modal-disk-item">
         Disk ${d.number} — ${escHtml(d.friendlyName || 'Unknown')} (${(d.sizeGB||0).toFixed(1)} GB)${modeSuffix}
       </div>`
@@ -1436,7 +1466,7 @@
       } catch (_) {
         sequentialBuild = localStorage.getItem('lw_dev.sequentialBuild') === 'true'
       }
-      await window.api.startBuild({
+      const started = await window.api.startBuild({
         workflowType: wfType.toUpperCase(),
         disks: selectedDisks.map(d => ({ number: d.number, mode: effectiveDiskMode(d) })),
         // WIN-INSTALL always builds from ISO (Architecture B); ignore staged WIM.
@@ -1447,6 +1477,11 @@
         sourcePath: usesSourcePicker() ? (selectedSource?.path || undefined) : undefined,
         dataVolumeLabel: isWinInstall ? fat32LabelFromBuildDate(stagingBuildDate()) : undefined
       })
+      if (started && started.started === false) {
+        window.toast(started.error || 'Build start failed', 'error', 8000)
+        setBuilding(false)
+        setBuildInProgress(false)
+      }
     } catch (err) {
       window.toast('Build start failed: ' + err.message, 'error')
       setBuilding(false)
@@ -2116,7 +2151,6 @@
     window.api.getDevInfo().then(info => {
       // Assume release until proven otherwise, so the per-disk mode toggle never
       // flashes into a packaged build during the async dev-info round-trip.
-      isPackagedBuild = !!info.isPackaged
       if (overrideEl && !info.isPackaged) overrideEl.style.display = 'flex'
       // Stage ISO is DEV-MODE-ONLY and only meaningful for LoneWolf (AMD64/ARM64)
       // workflows, which pre-split install.wim for FAT32.
@@ -2125,7 +2159,7 @@
         const banner = page.querySelector('#local-build-banner')
         if (banner) banner.style.display = 'flex'
       }
-      if (!info.isPackaged && disks.length) renderDiskGrid()
+      if (disks.length) renderDiskGrid()
     }).catch(() => {})
     page.querySelector('#sel-all-btn').addEventListener('click', selectAll)
     page.querySelector('#desel-btn').addEventListener('click', deselectAll)

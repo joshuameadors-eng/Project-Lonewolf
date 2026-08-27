@@ -1,14 +1,19 @@
 {
   "name": "project-lonewolf-launcher",
   "author": "FirstBase | Joshua Meadors",
-  "version": "5.4.2",
+  "version": "5.4.14",
   "description": "Project LoneWolf Launcher — FirstBase Deployment Suite GUI",
+  "copyright": "Copyright © 2026 FirstBase | Joshua Meadors",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "provisioner:publish": "dotnet publish provisioner/LoneWolf.Provisioner/LoneWolf.Provisioner.csproj -c Release -r win-x64 --self-contained false -o provisioner/publish",
     "prebuild": "npm run provisioner:publish",
-    "build": "electron-builder --win --x64 --config electron-builder.yml"
+    "build": "electron-builder --win --x64 --config electron-builder.yml && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compile-bootstrapper.ps1",
+    "installer:compile": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compile-bootstrapper.ps1",
+    "publish:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-public-release.ps1",
+    "test:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-installer-updater.ps1",
+    "test": "npm run test:e2e"
   },
   "devDependencies": {
     "electron": "^30.0.0",

@@ -1,4 +1,4 @@
-/* Changelog page — timeline of version entries from staging share VERSION.json */
+/* Changelog page — timeline of version entries from bundled VERSION.json */
 ;(function () {
 
   function escHtml(s) {

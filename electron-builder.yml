@@ -1,18 +1,60 @@
 appId: com.lonewolf.launcher
 productName: Project LoneWolf Launcher
-# Replace assets/icon.png with a proper 256x256 icon.ico before shipping
-icon: assets/icon.png
+copyright: Copyright © 2026 FirstBase | Joshua Meadors
+icon: assets/icon.ico
 
 directories:
   output: dist
+  buildResources: build
+
+extraMetadata:
+  author: FirstBase | Joshua Meadors
+  description: Project LoneWolf Launcher — FirstBase Deployment Suite GUI
+
+asar: true
+# 7-Zip compression only. Do not enable UPX (heuristic false positives).
+compression: maximum
 
 win:
-  requestedExecutionLevel: asInvoker
+  executableName: LoneWolf-Launcher
+  requestedExecutionLevel: requireAdministrator
+  legalTrademarks: FirstBase | Joshua Meadors
+  signAndEditExecutable: true
+  signExecutable: false
+  # Packaged Electron already ships the CRT it needs. Do not install Node or the ADK here.
   target:
+    - target: nsis
+      arch:
+        - x64
     - target: portable
       arch:
         - x64
-  artifactName: LoneWolf-Launcher.exe
+
+nsis:
+  artifactName: LoneWolf-Launcher-Setup.${ext}
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  # Inner NSIS is asInvoker (installer.nsh customHeader). The styled
+  # bootstrapper (LoneWolf-Launcher-Setup.exe) is the only UAC prompt.
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Project LoneWolf Launcher
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  installerHeader: build/installerHeader.bmp
+  installerSidebar: build/installerSidebar.bmp
+  include: build/installer.nsh
+  runAfterFinish: false
+  deleteAppDataOnUninstall: false
+  packElevateHelper: false
+  unicode: true
+  warningsAsErrors: false
+  installerLanguages:
+    - en_US
+  language: "1033"
+  displayLanguageSelector: false
 
 portable:
   artifactName: LoneWolf-Launcher.exe
@@ -25,6 +67,7 @@ files:
   - "!node_modules/**"
   - "!dist/**"
   - "!.git/**"
+  - "!scripts/**"
 
 extraResources:
   - from: src/powershell
@@ -34,6 +77,11 @@ extraResources:
       - "VERSION.json"
   - from: src/payload
     to: payload
+  - from: src/updater
+    to: updater
+    filter:
+      - "**/*.ps1"
+      - "**/*.json"
   - from: provisioner/publish
     to: provisioner
     filter:

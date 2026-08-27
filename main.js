@@ -3,6 +3,8 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { spawn, exec } = require('child_process')
+const { evaluateHqNetwork, HQ_BLOCKED_MESSAGE } = require('./src/launcher/hqNetworkGuard')
+const { recommendUsbBuildMode } = require('./src/launcher/recommendUsbBuildMode')
 
 // ─── Early launch log (runs before anything else — helps diagnose silent crashes) ──
 const LAUNCH_LOG = path.join(os.tmpdir(), 'lonewolf-launch.log')
@@ -52,8 +54,8 @@ const IS_PACKED = app.isPackaged
 const PS_DIR = IS_PACKED
   ? path.join(process.resourcesPath, 'powershell')
   : path.join(__dirname, 'src', 'powershell')
-// Official (release) VERSION.json on the deployment share vs local/dev tree copy.
-const SHARE_VERSION_JSON = '\\\\WIN-HQ5JDEACV3S\\Images\\FB Image Creation\\Remote\\Staging\\VERSION.json'
+// Packaged launcher versioning: public GitHub latest.json (not the ISO share).
+const GITHUB_LATEST_JSON = 'https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json'
 const LOCAL_VERSION_JSON = path.join(PS_DIR, 'VERSION.json')
 
 const GET_USB_PS       = path.join(PS_DIR, 'Get-UsbDisks.ps1')
@@ -63,9 +65,12 @@ const STAGING_PS       = path.join(PS_DIR, 'Get-StagingVersion.ps1')
 // Dev-only pre-split producer: pre-splits install.wim into an install*.swm set and
 // stages it (share, or the local Remote\Staging tree in local build mode).
 const STAGE_PS         = path.join(PS_DIR, 'Stage-PreSplitImage.ps1')
-const GET_UPDATE_PS    = path.join(PS_DIR, 'Get-LauncherUpdate.ps1')
-const INSTALL_UPDATE_PS = path.join(PS_DIR, 'Install-LauncherUpdate.ps1')
+const UPDATER_PS = IS_PACKED
+  ? path.join(process.resourcesPath, 'updater', 'Invoke-LoneWolfUpdater.ps1')
+  : path.join(__dirname, 'src', 'updater', 'Invoke-LoneWolfUpdater.ps1')
+const RESOURCES_ROOT = IS_PACKED ? process.resourcesPath : path.join(__dirname, 'src')
 const USB_POLICY_PS    = path.join(PS_DIR, 'Test-UsbPolicy.ps1')
+const HQ_SNAPSHOT_PS   = path.join(PS_DIR, 'Get-HqNetworkSnapshot.ps1')
 const PROVISIONER_DIR  = IS_PACKED
   ? path.join(process.resourcesPath, 'provisioner')
   : path.join(__dirname, 'provisioner', 'publish')
@@ -330,6 +335,73 @@ function ensureShareCredentials() {
   registerShareCredentials()
 }
 
+let hqStatusCache = { ts: 0, result: null }
+const HQ_STATUS_TTL_MS = 8000
+
+function parseHqSnapshotJson (raw) {
+  const line = String(raw || '').split(/\r?\n/).map((l) => l.trim()).find((l) => l.startsWith('{'))
+  if (!line) return { ssid: '', ipv4: [], gateways: [] }
+  try {
+    const j = JSON.parse(line)
+    const ipv4 = Array.isArray(j.ipv4) ? j.ipv4 : (j.ipv4 ? [j.ipv4] : [])
+    const gateways = Array.isArray(j.gateways) ? j.gateways : (j.gateways ? [j.gateways] : [])
+    return { ssid: j.ssid || '', ipv4, gateways }
+  } catch (_) {
+    return { ssid: '', ipv4: [], gateways: [] }
+  }
+}
+
+function probeHqSnapshot () {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (val) => {
+      if (settled) return
+      settled = true
+      resolve(val)
+    }
+    const ps = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', HQ_SNAPSHOT_PS
+    ], { windowsHide: true })
+    let stdout = ''
+    ps.stdout.on('data', (d) => { stdout += d.toString() })
+    ps.stderr.on('data', () => {})
+    ps.on('error', () => done({ ssid: '', ipv4: [], gateways: [] }))
+    ps.on('close', () => done(parseHqSnapshotJson(stdout)))
+    setTimeout(() => {
+      try { ps.kill() } catch (_) {}
+      done({ ssid: '', ipv4: [], gateways: [] })
+    }, 12000)
+  })
+}
+
+async function getHqNetworkStatus (force) {
+  const now = Date.now()
+  if (!force && hqStatusCache.result && (now - hqStatusCache.ts) < HQ_STATUS_TTL_MS) {
+    return hqStatusCache.result
+  }
+  const snap = await probeHqSnapshot()
+  const evaluated = evaluateHqNetwork(snap)
+  const result = {
+    ok: !!evaluated.ok,
+    ssidOk: !!evaluated.ssidOk,
+    ethernetOk: !!evaluated.ethernetOk,
+    hqBlocked: !evaluated.ok,
+    error: evaluated.ok ? null : HQ_BLOCKED_MESSAGE,
+    message: evaluated.message
+  }
+  hqStatusCache = { ts: now, result }
+  return result
+}
+
+function hqDeniedPayload (extra) {
+  return Object.assign({
+    ok: false,
+    hqBlocked: true,
+    error: HQ_BLOCKED_MESSAGE
+  }, extra || {})
+}
+
 // ─── IPC: dev-only local build toggle ────────────────────────────────────────
 // Renderer calls this whenever Settings → Local Build Mode changes (and once
 // on settings-modal load) so main.js knows whether to skip the network entirely.
@@ -523,22 +595,27 @@ function readLocalVersionManifest() {
   }
 }
 
-async function readShareVersionManifest() {
-  // Always register share credentials for the official VERSION.json cross-ref —
-  // even when Local Build Mode is on (that mode only skips build/staging network use).
-  registerShareCredentials()
-  const raw = await Promise.race([
-    fs.promises.readFile(SHARE_VERSION_JSON, 'utf8'),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('share read timeout')), 8000))
-  ])
-  return JSON.parse(raw)
+async function readGithubLatestManifest() {
+  const ac = new AbortController()
+  const t = setTimeout(() => ac.abort(), 8000)
+  try {
+    const res = await fetch(GITHUB_LATEST_JSON, {
+      headers: { 'User-Agent': 'LoneWolf-Launcher' },
+      signal: ac.signal,
+      redirect: 'follow'
+    })
+    if (!res.ok) throw new Error('github latest.json HTTP ' + res.status)
+    const text = (await res.text()).replace(/^\uFEFF/, '')
+    return JSON.parse(text)
+  } finally {
+    clearTimeout(t)
+  }
 }
 
 /**
- * Dev-mode cross-ref: share (release) VERSION.json vs local/dev VERSION.json + package version.
- * - launcher: app.getVersion() / local.launcherVersion vs share.launcherVersion
- * - script:   local.version vs share.version  (product / staging script version)
- * isDevBuild when either local value is higher than share official.
+ * This-install launcher version is always app.getVersion() (packaged FileVersion / package.json).
+ * Available update comes from GitHub latest.json, never a share VERSION.json.
+ * DEV chrome is unpackaged (npm start) only — never packaged/installed/release.
  */
 async function resolveDevVersionCrossRef() {
   const appVer = app.getVersion()
@@ -546,8 +623,8 @@ async function resolveDevVersionCrossRef() {
   const localLauncher = (localManifest && (localManifest.launcherVersion || localManifest.version))
     ? String(localManifest.launcherVersion || localManifest.version)
     : appVer
-  const localScript = (localManifest && (localManifest.version || localManifest.launcherVersion))
-    ? String(localManifest.version || localManifest.launcherVersion)
+  const localScript = (localManifest && (localManifest.payloadVersion || localManifest.version || localManifest.launcherVersion))
+    ? String(localManifest.payloadVersion || localManifest.version || localManifest.launcherVersion)
     : null
 
   const result = {
@@ -558,34 +635,28 @@ async function resolveDevVersionCrossRef() {
     shareScript: null,
     launcherAhead: false,
     scriptAhead: false,
-    isDevBuild: false,
+    isDevBuild: !IS_PACKED,
     isUnpackaged: !IS_PACKED,
-    shareError: null
+    isPackaged: IS_PACKED,
+    shareError: null,
+    versionSource: 'github-latest.json'
   }
 
-  // Prefer the higher of package.json vs local VERSION.json launcherVersion as "local launcher".
-  const localLauncherEffective =
-    compareLauncherSemVer(appVer, localLauncher) >= 0 ? appVer : localLauncher
-  result.localLauncher = localLauncherEffective
-
   try {
-    const share = await readShareVersionManifest()
-    result.shareLauncher = (share && (share.launcherVersion || share.version)) ? String(share.launcherVersion || share.version) : null
-    result.shareScript = (share && (share.version || share.launcherVersion)) ? String(share.version || share.launcherVersion) : null
+    const gh = await readGithubLatestManifest()
+    result.shareLauncher = (gh && gh.launcherVersion) ? String(gh.launcherVersion) : null
+    result.shareScript = (gh && gh.payloadVersion) ? String(gh.payloadVersion) : null
 
-    if (result.shareLauncher && localLauncherEffective &&
-        compareLauncherSemVer(localLauncherEffective, result.shareLauncher) > 0) {
+    if (result.shareLauncher && appVer &&
+        compareLauncherSemVer(appVer, result.shareLauncher) > 0) {
       result.launcherAhead = true
     }
     if (result.shareScript && localScript &&
         compareLauncherSemVer(localScript, result.shareScript) > 0) {
       result.scriptAhead = true
     }
-    result.isDevBuild = result.launcherAhead || result.scriptAhead
   } catch (err) {
     result.shareError = err.message || String(err)
-    // Unpackaged + share unreachable: treat as Dev so sticks still get the pill while testing offline.
-    if (!IS_PACKED) result.isDevBuild = true
   }
   return result
 }
@@ -606,9 +677,12 @@ ipcMain.handle('app:versionStatus', async () => {
     scriptAhead: xref.scriptAhead,
     isDevBuild: xref.isDevBuild,
     isUnpackaged: xref.isUnpackaged,
+    isPackaged: IS_PACKED,
     shareError: xref.shareError
   }
 })
+
+ipcMain.handle('hq:status', async () => getHqNetworkStatus())
 
 // ─── IPC: USB detect ─────────────────────────────────────────────────────────
 ipcMain.handle('usb:detect', async () => {
@@ -662,7 +736,9 @@ ipcMain.handle('system:checkUsbPolicy', async () => {
 })
 
 // ─── IPC: share register ─────────────────────────────────────────────────────
-ipcMain.handle('share:register', () => {
+ipcMain.handle('share:register', async () => {
+  const hq = await getHqNetworkStatus()
+  if (hq.hqBlocked) return { reachable: false, hqBlocked: true, error: HQ_BLOCKED_MESSAGE }
   return new Promise((resolve) => {
     registerShareCredentials()
     const host = 'WIN-HQ5JDEACV3S'
@@ -758,7 +834,13 @@ ipcMain.handle('build:start', async (event, params) => {
   const isSequential = !IS_PACKED && !!params.sequentialBuild
   const localBuild = !IS_PACKED && (!!params.localBuild || devLocalBuildEnabled)
   const localRemotePath = localBuild ? path.join(app.getAppPath(), 'Remote') : null
-  if (!localBuild) ensureShareCredentials()
+  if (!localBuild) {
+    const hq = await getHqNetworkStatus()
+    if (hq.hqBlocked) {
+      return { started: false, hqBlocked: true, error: HQ_BLOCKED_MESSAGE }
+    }
+    ensureShareCredentials()
+  }
 
   const cacheRootSuffix = workflowType.toUpperCase()
   // LoneWolf + WIN-INSTALL run the proven local PowerShell builder (never the provisioner).
@@ -773,7 +855,7 @@ ipcMain.handle('build:start', async (event, params) => {
   const psWorkflowType = workflowType.replace(/^QUICK-INSTALL-/i, '')
   const launcherVersion = app.getVersion()
   const xref = await resolveDevVersionCrossRef()
-  const isDevBuild = !!xref.isDevBuild
+  const isDevBuild = !IS_PACKED
   const scriptVersion = xref.localScript || ''
   const shareLauncher = xref.shareLauncher || ''
   const shareScript = xref.shareScript || ''
@@ -888,7 +970,13 @@ ipcMain.handle('stage:start', async (event, opts) => {
   // So in dev it always stages locally; an explicit opts.localBuild===false can opt back to share.
   const localBuild = !IS_PACKED && (opts.localBuild !== false)
   const localRemotePath = localBuild ? path.join(app.getAppPath(), 'Remote') : null
-  if (!localBuild) ensureShareCredentials()
+  if (!localBuild) {
+    const hq = await getHqNetworkStatus()
+    if (hq.hqBlocked) {
+      return { ok: false, hqBlocked: true, error: HQ_BLOCKED_MESSAGE }
+    }
+    ensureShareCredentials()
+  }
 
   const args = ['-WorkflowType', psWorkflowType, '-AppResourcesPath', appResPath]
   if (localBuild) args.push('-LocalProjectRoot', localRemotePath)
@@ -976,7 +1064,13 @@ ipcMain.handle('precache:start', async (event, opts) => {
     try { preCacheProcess.kill() } catch (_) {}
     preCacheProcess = null
   }
-  if (!localBuild) ensureShareCredentials()
+  if (!localBuild) {
+    const hq = await getHqNetworkStatus()
+    if (hq.hqBlocked) {
+      return { started: false, hqBlocked: true, error: HQ_BLOCKED_MESSAGE }
+    }
+    ensureShareCredentials()
+  }
 
   const win = mainWindow
 
@@ -1068,6 +1162,23 @@ ipcMain.handle('precache:start', async (event, opts) => {
   return { started: true }
 })
 
+function applyBundledPayloadVersion(info) {
+  const out = (info && typeof info === 'object') ? info : {}
+  const local = readLocalVersionManifest()
+  if (local && (local.payloadVersion || local.version)) {
+    out.version = String(local.payloadVersion || local.version)
+    out.payloadVersion = String(local.payloadVersion || local.version)
+  }
+  // Do not overlay architectures.wimBuildDate from VERSION.json — image date is the share ISO.
+  if (!out.architectures) {
+    out.architectures = {
+      AMD64: { wimBuildDate: '', payloadHash: '', enabled: true },
+      ARM64: { wimBuildDate: '', payloadHash: '', enabled: false }
+    }
+  }
+  return out
+}
+
 // ─── IPC: staging version ─────────────────────────────────────────────────────
 ipcMain.handle('staging:version', async (event, workflowType) => {
   const { arch } = resolveArch(workflowType)
@@ -1076,13 +1187,29 @@ ipcMain.handle('staging:version', async (event, workflowType) => {
   const wf = arch.replace(/^QUICK-INSTALL-/i, '')
   const useLocal = !IS_PACKED && devLocalBuildEnabled
   devLog('IPC', `staging:version called | workflowType=${workflowType} localBuild=${useLocal}`)
+  if (!useLocal) {
+    const hq = await getHqNetworkStatus()
+    if (hq.hqBlocked) {
+      return applyBundledPayloadVersion({
+        version: 'unknown',
+        buildDate: '',
+        workflowType: wf,
+        wimLastModified: '',
+        changelog: [],
+        architectures: { AMD64: { enabled: true }, ARM64: { enabled: false } },
+        buildMode: 'none',
+        hqBlocked: true,
+        error: HQ_BLOCKED_MESSAGE
+      })
+    }
+  }
   if (getProvisionerExe()) {
     try {
       const args = ['staging', 'info', '--workflow', wf]
       if (useLocal) args.push('--local-project-root', path.join(app.getAppPath(), 'Remote'))
       else ensureShareCredentials()
       const raw = await runProvisionerCollect(args)
-      return parseProvisionerJson(raw)
+      return applyBundledPayloadVersion(parseProvisionerJson(raw))
     } catch (err) {
       devLog('IPC', `staging:version provisioner error: ${err.message}`)
     }
@@ -1097,10 +1224,10 @@ ipcMain.handle('staging:version', async (event, workflowType) => {
     const raw = await runPSCollect(STAGING_PS, stagingArgs)
     const jsonLine = raw.split('\n').map(l => l.trim()).find(l => l.startsWith('{'))
     if (!jsonLine) throw new Error('No JSON object found in staging script output')
-    return JSON.parse(jsonLine)
+    return applyBundledPayloadVersion(JSON.parse(jsonLine))
   } catch (err) {
     console.error('staging:version error:', err.message)
-    return { version: 'unknown', buildDate: '', workflowType: wf, wimLastModified: '', changelog: [], architectures: { AMD64: { enabled: true }, ARM64: { enabled: false } }, buildMode: 'none' }
+    return applyBundledPayloadVersion({ version: 'unknown', buildDate: '', workflowType: wf, wimLastModified: '', changelog: [], architectures: { AMD64: { enabled: true }, ARM64: { enabled: false } }, buildMode: 'none' })
   }
 })
 
@@ -1308,9 +1435,15 @@ ipcMain.handle('sources:cancelLocalScan', async () => {
 
 ipcMain.handle('sources:scanShare', async (_event, workflowType) => {
   try {
+    const useLocal = !IS_PACKED && devLocalBuildEnabled
+    if (!useLocal) {
+      const hq = await getHqNetworkStatus()
+      if (hq.hqBlocked) {
+        return { hqBlocked: true, error: HQ_BLOCKED_MESSAGE, entries: [] }
+      }
+    }
     if (!getProvisionerExe()) return []
     const { arch: wf } = resolveArch(workflowType || 'AMD64')
-    const useLocal = !IS_PACKED && devLocalBuildEnabled
     const args = ['sources', 'scan-share', '--workflow', wf]
     if (useLocal) args.push('--local-project-root', path.join(app.getAppPath(), 'Remote'))
     else ensureShareCredentials()
@@ -1382,11 +1515,7 @@ ipcMain.handle('sources:browse', async (_event, { kind }) => {
 })
 
 // ─── IPC: changelog get ───────────────────────────────────────────────────────
-// Reads changelog entries using a two-source fallback chain:
-//   1. Share VERSION.json — direct fs read with 8 s timeout (no PS, no admin needed)
-//   2. Local bundled VERSION.json — always present, no network required
-// Share credentials are registered lazily via ensureShareCredentials() (skipped
-// entirely in local build mode — see registerShareCredentials() above).
+// Bundled VERSION.json only. ISO share must not host version/changelog files.
 
 function readLocalChangelog() {
   try {
@@ -1397,122 +1526,45 @@ function readLocalChangelog() {
 }
 
 ipcMain.handle('changelog:get', async () => {
-  devLog('IPC', `changelog:get called | shareJson=${SHARE_VERSION_JSON} | localJson=${LOCAL_VERSION_JSON} | localBuild=${devLocalBuildEnabled}`)
-  // Local build mode: skip the network attempt entirely and go straight to the
-  // bundled copy — there is no point waiting out an 8s timeout against a share
-  // this session was never meant to reach.
-  if (!IS_PACKED && devLocalBuildEnabled) {
-    const local = readLocalChangelog()
-    devLog('IPC', `changelog:get local build mode — using bundled changelog (${local ? local.length : 0} entries)`)
-    return local || []
-  }
-  ensureShareCredentials()
-  try {
-    const raw = await Promise.race([
-      fs.promises.readFile(SHARE_VERSION_JSON, 'utf8'),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('share read timeout')), 8000))
-    ])
-    const data = JSON.parse(raw)
-    if (Array.isArray(data.changelog) && data.changelog.length > 0) {
-      devLog('IPC', `changelog:get share ok — ${data.changelog.length} entries`)
-      return data.changelog
-    }
-    devLog('IPC', 'changelog:get share returned empty changelog — trying local fallback')
-  } catch (err) {
-    devLog('IPC', `changelog:get share failed: ${err.message}`)
-  }
   const local = readLocalChangelog()
-  if (local) {
-    devLog('IPC', `changelog:get using local fallback — ${local.length} entries`)
-    return local
-  }
-  devLog('IPC', 'changelog:get both sources failed — returning empty')
-  return []
+  devLog('IPC', `changelog:get bundled (${local ? local.length : 0} entries)`)
+  return local || []
 })
 
-// ─── IPC: launcher update check ──────────────────────────────────────────────
-let updateNotificationFired = false
-ipcMain.handle('update:check', async () => {
-  const version = app.getVersion()
-  // Local build mode: a fully-local dev session has nothing meaningful to self-update
-  // against — skip the network call rather than waiting on an unreachable share.
-  if (!IS_PACKED && devLocalBuildEnabled) {
-    devLog('IPC', 'update:check skipped — local build mode active')
-    return { updateAvailable: false, reason: 'local-build-mode' }
-  }
-  ensureShareCredentials()
-  devLog('IPC', `update:check called | currentVersion=${version} | script=${GET_UPDATE_PS} | exists=${fs.existsSync(GET_UPDATE_PS)}`)
-  try {
-    const raw = await runPSCollect(GET_UPDATE_PS, ['-CurrentVersion', version])
-    devLog('IPC', `update:check raw output: ${raw.trim().substring(0, 200)}`)
-    const jsonLine = raw.split('\n').map(l => l.trim()).find(l => l.startsWith('{'))
-    if (!jsonLine) throw new Error('No JSON object found in update check output')
-    const result = JSON.parse(jsonLine)
-    devLog('IPC', `update:check result: updateAvailable=${result.updateAvailable} latestVersion=${result.latestVersion}`)
-    if (result && result.updateAvailable && !updateNotificationFired) {
-      updateNotificationFired = true
-      const { Notification } = require('electron')
-      if (Notification.isSupported()) {
-        new Notification({
-          title: 'LoneWolf Launcher \u2014 Update Available',
-          body: 'A new version is ready. The app will update now.'
-        }).show()
-      }
-    }
-    return result
-  } catch (e) {
-    devLog('IPC', `update:check ERROR: ${e.message}`)
-    return { updateAvailable: false, error: e.message }
-  }
-})
+function readLocalPayloadVersion() {
+  const m = readLocalVersionManifest()
+  if (m && m.version) return String(m.version)
+  return app.getVersion()
+}
 
-// ─── IPC: launcher update install ────────────────────────────────────────────
-ipcMain.handle('update:install', async (event, { exePath }) => {
-  devLog('IPC', `update:install called | exePath=${exePath} | IS_PACKED=${IS_PACKED}`)
-  if (!IS_PACKED) return { ok: false, reason: 'dev-mode' }
+function parseUpdaterJson(raw) {
+  const jsonLine = String(raw || '').split('\n').map(l => l.trim()).find(l => l.startsWith('{'))
+  if (!jsonLine) throw new Error('No JSON object found in updater output')
+  return JSON.parse(jsonLine)
+}
 
-  const tmpExe = path.join(os.tmpdir(), 'LoneWolf-update.exe')
-  devLog('IPC', `update:install copying from share: ${exePath} -> ${tmpExe}`)
-  try {
-    // Use fs.promises.copyFile to reliably copy from a UNC path to a local temp file.
-    // Credentials for the share are registered lazily via ensureShareCredentials() — this
-    // path is unreachable in local build mode since update:check already returned early.
-    await fs.promises.copyFile(exePath, tmpExe)
-    devLog('IPC', `update:install copy succeeded`)
-  } catch (err) {
-    devLog('IPC', `update:install copy FAILED: ${err.message}`)
-    return { ok: false, error: `Could not download update from share: ${err.message}` }
-  }
+async function runPublicUpdater(extraArgs) {
+  const args = [
+    '-CurrentLauncherVersion', app.getVersion(),
+    '-CurrentPayloadVersion', readLocalPayloadVersion(),
+    ...extraArgs
+  ]
+  const raw = await runPSCollect(UPDATER_PS, args)
+  return parseUpdaterJson(raw)
+}
 
-  // Strip Zone.Identifier (Mark of the Web) from the downloaded temp exe.
-  // Files copied from network shares inherit a security zone that blocks the
-  // embedded requireAdministrator manifest from triggering UAC correctly.
-  try {
-    const zoneStream = tmpExe + ':Zone.Identifier'
-    await fs.promises.unlink(zoneStream).catch(() => {})
-    devLog('IPC', `update:install Zone.Identifier stripped from temp exe`)
-  } catch (_) {}
-
+function schedulePortableExeReplace(tmpExe) {
   const currentExe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath
   const pid = process.pid
-
-  // Ensure persistent log dir exists and write a JS-side diagnostic entry
-  // so we can confirm this code path was reached even in packaged/elevated mode.
   const LONEWOLF_DATA_DIR = 'C:\\ProgramData\\LoneWolf'
   const installerLog = path.join(LONEWOLF_DATA_DIR, 'installer.log')
   try { fs.mkdirSync(LONEWOLF_DATA_DIR, { recursive: true }) } catch (_) {}
   try {
     fs.appendFileSync(installerLog,
-      `[${new Date().toISOString()}] JS update:install: pid=${pid} tmpExe="${tmpExe}" PORTABLE_EXECUTABLE_FILE="${process.env.PORTABLE_EXECUTABLE_FILE}" currentExe="${currentExe}"\n`,
+      `[${new Date().toISOString()}] JS portable replace: pid=${pid} tmpExe="${tmpExe}" currentExe="${currentExe}"\n`,
       'utf8')
   } catch (_) {}
 
-  devLog('IPC', `update:install | PORTABLE_EXECUTABLE_FILE=${process.env.PORTABLE_EXECUTABLE_FILE} | using currentExe=${currentExe} | pid=${pid} | cmdLog=${installerLog}`)
-
-  // Generate a self-contained .cmd installer file at runtime.
-  // This is more reliable than a detached PS script: plain cmd built-ins,
-  // no execution-policy concerns, no $env:TEMP elevation ambiguity, and
-  // every step is logged to a fixed ProgramData path visible from any context.
   const cmdFilePath = path.join(os.tmpdir(), 'lonewolf-update.cmd')
   const cmdLines = [
     '@echo off',
@@ -1521,54 +1573,117 @@ ipcMain.handle('update:install', async (event, { exePath }) => {
     `set "SRC=${tmpExe}"`,
     `set "DST=${currentExe}"`,
     'echo [%DATE% %TIME%] CMD updater started >> "%LOG%"',
-    'echo [%DATE% %TIME%] SRC=%SRC% >> "%LOG%"',
-    'echo [%DATE% %TIME%] DST=%DST% >> "%LOG%"',
     'ping -n 4 127.0.0.1 > nul',
-    'echo [%DATE% %TIME%] Waited ~3s for old process to exit >> "%LOG%"',
     'copy /Y "%SRC%" "%DST%"',
-    'if errorlevel 1 (',
-    '    echo [%DATE% %TIME%] ERROR: copy failed >> "%LOG%"',
-    '    exit /b 1',
-    ')',
-    'echo [%DATE% %TIME%] Copy succeeded >> "%LOG%"',
+    'if errorlevel 1 (echo [%DATE% %TIME%] ERROR: copy failed >> "%LOG%" & exit /b 1)',
     'start "" "%DST%"',
-    'echo [%DATE% %TIME%] Relaunch launched >> "%LOG%"',
     'del "%SRC%" 2>nul',
-    'endlocal',
+    'endlocal'
   ]
-
-  try {
-    fs.writeFileSync(cmdFilePath, cmdLines.join('\r\n'), 'utf8')
-    fs.appendFileSync(installerLog,
-      `[${new Date().toISOString()}] JS: cmd file written: "${cmdFilePath}"\n`, 'utf8')
-  } catch (err) {
-    devLog('IPC', `update:install cmd write FAILED: ${err.message}`)
-    return { ok: false, error: `Could not write update script: ${err.message}` }
-  }
-
-  // Write a VBScript wrapper so the .cmd runs with no visible window flash.
-  // wscript.exe with windowStyle=0 is completely hidden; cmd.exe always shows briefly.
+  fs.writeFileSync(cmdFilePath, cmdLines.join('\r\n'), 'utf8')
   const vbsPath = path.join(os.tmpdir(), 'lonewolf-update.vbs')
-  const vbsContent = `Set oShell = CreateObject("WScript.Shell")\r\noShell.Run """${cmdFilePath}""", 0, False\r\n`
-  let useVbs = true
   try {
-    fs.writeFileSync(vbsPath, vbsContent, 'utf8')
-    devLog('IPC', `update:install vbs written: ${vbsPath}`)
-  } catch (vbsErr) {
-    devLog('IPC', `update:install vbs write FAILED: ${vbsErr.message} — falling back to cmd.exe`)
-    useVbs = false
-  }
-
-  if (useVbs) {
-    devLog('IPC', `update:install spawning wscript: ${vbsPath}`)
+    fs.writeFileSync(vbsPath, `Set oShell = CreateObject("WScript.Shell")\r\noShell.Run """${cmdFilePath}""", 0, False\r\n`, 'utf8')
     spawn('wscript.exe', [vbsPath], { detached: true, stdio: 'ignore' }).unref()
-  } else {
-    devLog('IPC', `update:install spawning cmd: ${cmdFilePath}`)
+  } catch (_) {
     spawn('cmd.exe', ['/c', cmdFilePath], { detached: true, stdio: 'ignore' }).unref()
   }
-
   setTimeout(() => app.quit(), 500)
-  return { ok: true }
+}
+
+// ─── IPC: public-repo update check (quick vs launcher channels) ──────────────
+let updateNotificationFired = false
+ipcMain.handle('update:check', async () => {
+  const version = app.getVersion()
+  if (!IS_PACKED && devLocalBuildEnabled) {
+    devLog('IPC', 'update:check skipped — local build mode active')
+    return { updateAvailable: false, payloadUpdateAvailable: false, launcherUpdateAvailable: false, reason: 'local-build-mode', packaged: false }
+  }
+  const hq = await getHqNetworkStatus()
+  if (hq.hqBlocked) {
+    devLog('IPC', 'update:check blocked — not on FirstbaseHQ')
+    return {
+      updateAvailable: false,
+      payloadUpdateAvailable: false,
+      launcherUpdateAvailable: false,
+      hqBlocked: true,
+      error: HQ_BLOCKED_MESSAGE,
+      packaged: IS_PACKED
+    }
+  }
+  devLog('IPC', `update:check called | currentVersion=${version} | updater=${UPDATER_PS}`)
+  try {
+    const extra = ['-Action', 'check', '-Channel', 'both']
+    if (!IS_PACKED) extra.push('-DevLocal', '-LocalSrcRoot', path.join(__dirname, 'src'))
+    const result = await runPublicUpdater(extra)
+    result.packaged = IS_PACKED
+    result.latestVersion = result.latestLauncherVersion || result.latestVersion
+    result.currentVersion = version
+    if (!IS_PACKED) {
+      result.payloadUpdateAvailable = false
+      result.updateAvailable = !!result.launcherUpdateAvailable
+    }
+    const shouldNotify = IS_PACKED && (result.launcherUpdateAvailable || result.payloadUpdateAvailable)
+    if (shouldNotify && !updateNotificationFired) {
+      updateNotificationFired = true
+      const { Notification } = require('electron')
+      if (Notification.isSupported()) {
+        const body = result.launcherUpdateAvailable
+          ? 'A launcher update is available (does not apply from Quick Update).'
+          : 'A payload/script Quick Update is available (does not replace the launcher).'
+        new Notification({ title: 'LoneWolf Launcher \u2014 Update Available', body }).show()
+      }
+    }
+    return result
+  } catch (e) {
+    devLog('IPC', `update:check ERROR: ${e.message}`)
+    return { updateAvailable: false, payloadUpdateAvailable: false, launcherUpdateAvailable: false, error: e.message, packaged: IS_PACKED }
+  }
+})
+
+ipcMain.handle('update:quick', async () => {
+  devLog('IPC', `update:quick | IS_PACKED=${IS_PACKED}`)
+  if (!IS_PACKED) {
+    return {
+      ok: true,
+      skippedDownload: true,
+      mode: 'dev-local',
+      message: 'Dev checkout: destage USB sticks from local src/. GitHub Quick Update is for packaged installs only.'
+    }
+  }
+  const hq = await getHqNetworkStatus()
+  if (hq.hqBlocked) return hqDeniedPayload()
+  try {
+    return await runPublicUpdater([
+      '-Action', 'quick',
+      '-ResourcesRoot', RESOURCES_ROOT
+    ])
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// ─── IPC: launcher update install (public Releases; never payload zip) ───────
+ipcMain.handle('update:install', async (event, _params) => {
+  devLog('IPC', `update:install (launcher channel) | IS_PACKED=${IS_PACKED}`)
+  if (!IS_PACKED) return { ok: false, reason: 'dev-mode' }
+  const hq = await getHqNetworkStatus()
+  if (hq.hqBlocked) return hqDeniedPayload()
+  try {
+    const result = await runPublicUpdater(['-Action', 'launcher'])
+    if (!result || !result.ok) return { ok: false, error: (result && result.error) || 'Launcher update failed' }
+    if (result.launcherKind === 'setup') {
+      setTimeout(() => app.quit(), 800)
+      return { ok: true, kind: 'setup' }
+    }
+    if (result.downloadedPath && result.launcherKind === 'portable') {
+      schedulePortableExeReplace(result.downloadedPath)
+      return { ok: true, kind: 'portable' }
+    }
+    return { ok: false, error: 'No launcher asset downloaded' }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
 })
 
 // ─── IPC: build check-update ─────────────────────────────────────────────────
@@ -1591,13 +1706,21 @@ ipcMain.handle('build:check-update', async (event, params) => {
     return disks.map(disk => {
       let recommendation = 'full'
       if (disk.isLoneWolfDisk === true) {
-        recommendation = disk.lwVersion === stagingVersion ? 'current' : 'overlay'
+        const rec = recommendUsbBuildMode({
+          isLoneWolfDisk: true,
+          stickImageDate: disk.lwImageBuildDate || disk.lwWimBuildDate || '',
+          currentImageDate: (staging.architectures && staging.architectures[wf] && staging.architectures[wf].wimBuildDate) || staging.buildDate || ''
+        })
+        recommendation = rec.imageOlder ? 'full' : (rec.mode === 'overlay' ? 'overlay' : 'full')
       }
       return {
         disk:           disk.number,
         recommendation,
-        currentVersion: disk.lwVersion || null,
-        stagingVersion
+        currentVersion: disk.lwScriptVersion || disk.lwVersion || null,
+        stagingVersion,
+        stickImageDate: disk.lwImageBuildDate || disk.lwWimBuildDate || null,
+        currentImageDate: (staging.architectures && staging.architectures[wf] && staging.architectures[wf].wimBuildDate) || staging.buildDate || null,
+        overlayAllowed: disk.isLoneWolfDisk === true
       }
     })
   } catch (err) {

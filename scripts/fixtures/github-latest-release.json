@@ -1,0 +1,11 @@
+{
+  "tag_name": "v5.4.7",
+  "name": "LoneWolf Launcher 5.4.7",
+  "body": "launcherVersion=5.4.7\npayloadVersion=5.4.2\nInstaller: LoneWolf-Launcher-Setup.exe only.",
+  "assets": [
+    {
+      "name": "LoneWolf-Launcher-Setup.exe",
+      "browser_download_url": "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/v5.4.7/LoneWolf-Launcher-Setup.exe"
+    }
+  ]
+}

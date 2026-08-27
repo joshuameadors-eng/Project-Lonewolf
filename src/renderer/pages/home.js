@@ -117,7 +117,7 @@
 
   function isStickDevBuild(disk, stagingVer) {
     if (disk && disk.lwDevBuild) return true
-    // Live cross-ref vs share official (dev mode): stick launcher/script ahead of share.
+    // Live cross-ref vs GitHub latest.json (unpackaged destage): stick ahead of public official.
     if (disk && disk.lwLauncherVersion && officialVersions.launcher &&
         compareSemVer(disk.lwLauncherVersion, officialVersions.launcher) > 0) return true
     if (disk && disk.lwScriptVersion && officialVersions.script &&
@@ -305,7 +305,7 @@
         const sizeLabel    = disk.sizeGB ? `${parseFloat(disk.sizeGB).toFixed(0)} GB` : ''
         const versionLabel = disk.lwVersion ? ` &bull; v${disk.lwVersion}` : ''
         const pillTitle = statusClass === 'dev-build'
-          ? ' title="Dev build: launcher or script version ahead of share official VERSION.json"'
+          ? ' title="Dev destage: launcher or script version ahead of GitHub latest.json"'
           : ''
 
         return `
