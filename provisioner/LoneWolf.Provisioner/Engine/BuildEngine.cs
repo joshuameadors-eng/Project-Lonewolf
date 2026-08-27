@@ -493,7 +493,7 @@ public sealed class BuildEngine
         if (data == null)
             throw new InvalidOperationException($"No data partition on disk {diskNumber}");
         await ApplyOverlayAsync(diskNumber, esp, data, ctx, ct).ConfigureAwait(false);
-        await WriteVersionStampAsync(data, ctx, diskNumber, opts.OverlayOnly, ct).ConfigureAwait(false);
+        await WriteVersionStampAsync(data, ctx, diskNumber, overlayOnly: true, ct).ConfigureAwait(false);
     }
 
     private async Task ApplyOverlayAsync(int diskNumber, string? espRoot, string dataRoot, BuildContext ctx, CancellationToken ct)

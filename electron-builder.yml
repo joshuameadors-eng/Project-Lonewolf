@@ -22,39 +22,12 @@ win:
   signAndEditExecutable: true
   signExecutable: false
   # Packaged Electron already ships the CRT it needs. Do not install Node or the ADK here.
+  # The public installer is installer/LoneWolf-Launcher-Setup.exe (bootstrapper).
+  # Do not emit NSIS as Setup.exe: re-running NSIS uninstalls and deletes the desktop shortcut.
   target:
-    - target: nsis
-      arch:
-        - x64
     - target: portable
       arch:
         - x64
-
-nsis:
-  artifactName: LoneWolf-Launcher-Setup.${ext}
-  oneClick: false
-  perMachine: true
-  allowToChangeInstallationDirectory: true
-  # Inner NSIS is asInvoker (installer.nsh customHeader). The styled
-  # bootstrapper (LoneWolf-Launcher-Setup.exe) is the only UAC prompt.
-  allowElevation: false
-  createDesktopShortcut: true
-  createStartMenuShortcut: true
-  shortcutName: Project LoneWolf Launcher
-  installerIcon: assets/icon.ico
-  uninstallerIcon: assets/icon.ico
-  installerHeader: build/installerHeader.bmp
-  installerSidebar: build/installerSidebar.bmp
-  include: build/installer.nsh
-  runAfterFinish: false
-  deleteAppDataOnUninstall: false
-  packElevateHelper: false
-  unicode: true
-  warningsAsErrors: false
-  installerLanguages:
-    - en_US
-  language: "1033"
-  displayLanguageSelector: false
 
 portable:
   artifactName: LoneWolf-Launcher.exe

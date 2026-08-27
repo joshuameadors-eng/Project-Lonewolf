@@ -1,18 +1,16 @@
 // .NET Framework 4.8 host: one UAC via app.manifest (requireAdministrator).
-// Does not relaunch with runas. Extracts the STA installer script and runs it
-// already elevated. Optional zip overlay at EOF (magic LWPAYLOAD1).
+// Extracts the STA installer script and runs it already elevated.
+// Does not embed the launcher exe. Install-LoneWolfLauncher.ps1 downloads
+// the latest portable from public latest.json at install time.
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
 
 internal static class LoneWolfSetupHost
 {
-    const string Magic = "LWPAYLOAD1";
-
     [STAThread]
     static int Main(string[] args)
     {
@@ -25,10 +23,6 @@ internal static class LoneWolfSetupHost
             ExtractEmbeddedScript(script);
             ExtractBranding(work);
 
-            var overlayDir = Path.Combine(work, "payload");
-            var exePath = Assembly.GetExecutingAssembly().Location;
-            TryExtractOverlay(exePath, overlayDir);
-
             var psi = new ProcessStartInfo();
             psi.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell\\v1.0\\powershell.exe");
             psi.UseShellExecute = false;
@@ -39,24 +33,6 @@ internal static class LoneWolfSetupHost
             sb.Append("-NoProfile -STA -ExecutionPolicy Bypass -File \"");
             sb.Append(script);
             sb.Append("\" -AlreadyElevated");
-
-            if (Directory.Exists(overlayDir))
-            {
-                var nsis = Path.Combine(overlayDir, "LoneWolf-Launcher-Nsis.exe");
-                var portable = Path.Combine(overlayDir, "LoneWolf-Launcher.exe");
-                if (File.Exists(nsis))
-                {
-                    sb.Append(" -InnerNsis \"");
-                    sb.Append(nsis);
-                    sb.Append("\"");
-                }
-                if (File.Exists(portable))
-                {
-                    sb.Append(" -PortableExe \"");
-                    sb.Append(portable);
-                    sb.Append("\"");
-                }
-            }
 
             foreach (var a in args)
             {
@@ -89,7 +65,7 @@ internal static class LoneWolfSetupHost
         {
             try
             {
-                MessageBox.Show(ex.Message, "LoneWolf Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(ex.Message, "LoneWolf Installer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch { }
             return 1;
@@ -132,42 +108,5 @@ internal static class LoneWolfSetupHost
             using (var fs = File.Create(Path.Combine(destDir, destName)))
                 if (s != null) s.CopyTo(fs);
         }
-    }
-
-    static void TryExtractOverlay(string exePath, string destDir)
-    {
-        try
-        {
-            using (var fs = File.OpenRead(exePath))
-            {
-                if (fs.Length < Magic.Length + 8) return;
-                fs.Seek(-(Magic.Length + 8), SeekOrigin.End);
-                var lenBuf = new byte[8];
-                var magBuf = new byte[Magic.Length];
-                fs.Read(lenBuf, 0, 8);
-                fs.Read(magBuf, 0, magBuf.Length);
-                if (Encoding.ASCII.GetString(magBuf) != Magic) return;
-                var zipLen = BitConverter.ToInt64(lenBuf, 0);
-                if (zipLen <= 0 || zipLen > fs.Length - Magic.Length - 8) return;
-                fs.Seek(-(Magic.Length + 8 + zipLen), SeekOrigin.End);
-                var zipPath = Path.Combine(Path.GetTempPath(), "lw-overlay-" + Guid.NewGuid().ToString("n") + ".zip");
-                using (var zf = File.Create(zipPath))
-                {
-                    var buf = new byte[81920];
-                    long left = zipLen;
-                    while (left > 0)
-                    {
-                        int n = fs.Read(buf, 0, (int)Math.Min(buf.Length, left));
-                        if (n <= 0) break;
-                        zf.Write(buf, 0, n);
-                        left -= n;
-                    }
-                }
-                Directory.CreateDirectory(destDir);
-                System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, destDir);
-                try { File.Delete(zipPath); } catch { }
-            }
-        }
-        catch { }
     }
 }

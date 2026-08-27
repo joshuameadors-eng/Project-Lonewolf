@@ -6,14 +6,14 @@
   Invoked by the Electron launcher or from a prompt. Never embeds tokens.
   Packaged builds pull versions from public git-tree latest.json
   (raw.githubusercontent.com / Contents API). Payload and portable exe live
-  in that source tree. Launcher Update downloads Setup from GitHub Releases
-  (the only release asset).
-  Dev checkouts (npm start) use the local src/ tree for Quick Update destage —
+  in that source tree. The installer tool (LoneWolf-Launcher-Setup.exe) lives
+  on a stable GitHub Releases tag named installer and is first-install only.
+  Dev checkouts (npm start) use the local src/ tree for Quick Update destage -
   they do not require a GitHub payload download to test USB sticks.
 
   Channels are exclusive:
     quick     -> payload zip from public SOURCE tree (never launcher exe/setup)
-    launcher  -> LoneWolf-Launcher-Setup.exe from Releases (never payload)
+    launcher  -> portable LoneWolf-Launcher.exe from SOURCE tree (never Setup, never payload)
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +36,8 @@ param(
 
     [string]$FixturePath = '',
     [string]$ManifestFixturePath = '',
-    [string]$ChannelConfigPath = ''
+    [string]$ChannelConfigPath = '',
+    [string]$TargetExe = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,6 +57,7 @@ function Get-ChannelConfig {
         manifestUrl     = 'https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json'
         contentsApiUrl  = 'https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/contents/latest.json'
         setupAsset      = 'LoneWolf-Launcher-Setup.exe'
+        setupUrl        = 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe'
         portablePath    = 'bin/LoneWolf-Launcher.exe'
         payloadAsset    = 'FirstBase-payload.zip'
         manifestAsset   = 'latest.json'
@@ -186,7 +188,7 @@ function Resolve-ChannelAssets {
         $setupUrl = Get-AssetUrl -Release $Release -ExactName $Cfg.setupAsset
     }
     if (-not $setupUrl) {
-        $setupUrl = "https://github.com/$($Cfg.owner)/$($Cfg.repo)/releases/latest/download/LoneWolf-Launcher-Setup.exe"
+        $setupUrl = "https://github.com/$($Cfg.owner)/$($Cfg.repo)/releases/download/installer/LoneWolf-Launcher-Setup.exe"
     }
 
     $payloadUrl = $null
@@ -212,7 +214,11 @@ function Resolve-ChannelAssets {
     $quickUrls = @()
     if ($payloadUrl) { $quickUrls += $payloadUrl }
     $launcherUrls = @()
-    if ($setupUrl) { $launcherUrls += $setupUrl }
+    if ($WantChannel -eq 'launcher') {
+        if ($portableUrl) { $launcherUrls += $portableUrl }
+    } else {
+        if ($setupUrl) { $launcherUrls += $setupUrl }
+    }
 
     foreach ($u in $quickUrls) {
         if ($u -match 'LoneWolf-Launcher-Setup\.exe$' -or ($u -match 'LoneWolf-Launcher\.exe$' -and $u -notmatch 'payload')) {
@@ -226,14 +232,17 @@ function Resolve-ChannelAssets {
         if ($u -match 'FirstBase-payload\.zip$') {
             throw "Launcher channel resolved a payload zip URL: $u"
         }
+        if ($WantChannel -eq 'launcher' -and $u -match 'LoneWolf-Launcher-Setup\.exe$') {
+            throw "Launcher Update must not re-run Setup: $u"
+        }
     }
 
     $out = [ordered]@{
         setupUrl     = $setupUrl
         portableUrl  = $portableUrl
         payloadUrl   = $payloadUrl
-        launcherUrl  = $setupUrl
-        launcherKind = $(if ($setupUrl) { 'setup' } else { $null })
+        launcherUrl  = $portableUrl
+        launcherKind = $(if ($portableUrl) { 'portable' } else { $null })
         quickUrl     = $payloadUrl
     }
     if ($WantChannel -eq 'quick') {
@@ -244,7 +253,8 @@ function Resolve-ChannelAssets {
     } elseif ($WantChannel -eq 'launcher') {
         $out.payloadUrl = $null
         $out.quickUrl = $null
-        $out.portableUrl = $null
+        $out.launcherUrl = $portableUrl
+        $out.launcherKind = $(if ($portableUrl) { 'portable' } else { $null })
     }
     return [pscustomobject]$out
 }
@@ -277,6 +287,8 @@ function Install-QuickPayload {
         }
         Get-ChildItem -LiteralPath $stage -Recurse -File -Filter 'LoneWolf-Launcher*.exe' -ErrorAction SilentlyContinue |
             ForEach-Object { throw "Refusing quick update: zip contains launcher exe $($_.Name)" }
+        Get-ChildItem -LiteralPath $stage -Recurse -File -Filter '*.lnk' -ErrorAction SilentlyContinue |
+            ForEach-Object { throw "Refusing quick update: zip contains shortcut $($_.Name)" }
         if (Test-Path -LiteralPath $payloadSrc) {
             $payloadDst = Join-Path $DestRoot 'payload'
             if (-not (Test-Path -LiteralPath $payloadDst)) { New-Item -ItemType Directory -Path $payloadDst -Force | Out-Null }
@@ -389,14 +401,42 @@ try {
     }
 
     if ($Action -eq 'launcher') {
-        if (-not $result.launcherUrl) { throw 'No LoneWolf-Launcher-Setup.exe on the latest public release' }
-        $destName = 'LoneWolf-Launcher-Setup.exe'
+        if (-not $result.portableUrl) { throw 'No portable exe URL in public source latest.json' }
+        $destName = 'LoneWolf-Launcher.exe'
         $dest = Join-Path $env:TEMP $destName
-        Invoke-HttpDownload -Url $result.launcherUrl -Dest $dest
+        Invoke-HttpDownload -Url $result.portableUrl -Dest $dest
         $result.downloadedPath = $dest
+        $result.launcherKind = 'portable'
         $result.applied = 'launcher'
-        # Packaged launcher is already elevated. Do not request a second UAC.
-        Start-Process -FilePath $dest -ArgumentList '/S' -ErrorAction Stop
+        $exeForShortcut = $TargetExe
+        if (-not $exeForShortcut) {
+            $stable = Join-Path ${env:ProgramFiles} 'Project LoneWolf Launcher\LoneWolf-Launcher.exe'
+            if (Test-Path -LiteralPath $stable) { $exeForShortcut = $stable }
+        }
+        if ($exeForShortcut -and (Test-Path -LiteralPath $exeForShortcut)) {
+            $desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Project LoneWolf Launcher.lnk'
+            $sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\Project LoneWolf Launcher.lnk'
+            $smDir = Split-Path $sm
+            if (-not (Test-Path -LiteralPath $smDir)) { New-Item -ItemType Directory -Path $smDir -Force | Out-Null }
+            $w = New-Object -ComObject WScript.Shell
+            foreach ($lnk in @($desk, $sm)) {
+                if (-not (Test-Path -LiteralPath $lnk)) {
+                    $s = $w.CreateShortcut($lnk)
+                    $s.TargetPath = $exeForShortcut
+                    $s.WorkingDirectory = Split-Path $exeForShortcut
+                    $s.WindowStyle = 1
+                    $s.Description = 'Project LoneWolf Launcher'
+                    $s.Save()
+                    if (Test-Path -LiteralPath $lnk) {
+                        $bytes = [System.IO.File]::ReadAllBytes($lnk)
+                        if ($bytes.Length -gt 0x15) {
+                            $bytes[0x15] = $bytes[0x15] -bor 0x20
+                            [System.IO.File]::WriteAllBytes($lnk, $bytes)
+                        }
+                    }
+                }
+            }
+        }
         Write-LwJson $result
         exit 0
     }

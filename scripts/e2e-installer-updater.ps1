@@ -28,17 +28,19 @@ $readme = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'README.md')
 
 # --- Version ---
 $lv = [string]$pkg.version
-if ($lv -eq '5.4.14') { Ok 'package.json version is 5.4.14' } else { Fail "package.json version is $lv (expected 5.4.14)" }
+if ($lv -eq '5.4.15') { Ok 'package.json version is 5.4.15' } else { Fail "package.json version is $lv (expected 5.4.15)" }
 if ($lv -eq [string]$verJson.launcherVersion) { Ok "package.json matches VERSION.json launcherVersion $lv" } else { Fail "package.json $($pkg.version) vs launcherVersion $($verJson.launcherVersion)" }
 $payloadVer = if ($verJson.PSObject.Properties['payloadVersion'] -and $verJson.payloadVersion) { [string]$verJson.payloadVersion } else { [string]$verJson.version }
-if ($payloadVer -eq '5.4.3') { Ok 'payloadVersion is 5.4.3 (script channel independent of launcher 5.4.14)' } else { Fail "payloadVersion unexpectedly $payloadVer" }
+if ($payloadVer -eq '5.4.3') { Ok 'payloadVersion is 5.4.3 (script channel independent of launcher 5.4.15)' } else { Fail "payloadVersion unexpectedly $payloadVer" }
 if ([string]$verJson.version -eq '5.4.3') { Ok 'VERSION.json product version matches payload 5.4.3' } else { Fail "product version unexpectedly $($verJson.version)" }
 
 # --- gitignore / README ---
 if ($gi -notmatch '(?m)^README\.md\s*$') { Ok '.gitignore does not ignore README.md' } else { Fail '.gitignore still lists README.md' }
-if ($readme -match 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest') {
-    Ok 'private README latest-release URL'
-} else { Fail 'private README missing latest-release URL' }
+$setupLink = 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe'
+if ($readme -match [regex]::Escape($setupLink)) {
+    Ok 'private README single installer URL (unversioned Setup on tag installer)'
+} else { Fail 'private README missing stable installer download URL' }
+if ($readme -notmatch 'LoneWolf-Launcher-Setup-v?5\.4') { Ok 'README Setup name is not versioned 5.4.x' } else { Fail 'README still shows a versioned Setup name' }
 if ($readme -match 'SmartScreen') { Ok 'README notes unsigned/SmartScreen' } else { Fail 'README missing SmartScreen note' }
 if ($readme -match '(?i)do \*\*not\*\* package' -or $readme -match '(?i)Do \*\*not\*\* package') {
     Ok 'README does not require packaging to test payload'
@@ -52,23 +54,18 @@ if ($readme -match 'bin/LoneWolf-Launcher.exe' -and $readme -match '(?i)repo fil
     Ok 'README: payload and portable exe live in public repo files'
 } else { Fail 'README must say payload/portable live in repo files not Releases' }
 
-# --- NSIS / single-UAC config ---
+# --- Bootstrapper installer (not NSIS Setup) ---
 if ($yml -match '(?m)^\s*requestedExecutionLevel:\s*requireAdministrator\s*$') { Ok 'app exe requestedExecutionLevel requireAdministrator' } else { Fail 'app requestedExecutionLevel is not requireAdministrator' }
-if ($yml -match 'packElevateHelper:\s*false') { Ok 'inner NSIS packElevateHelper false' } else { Fail 'packElevateHelper should be false (bootstrapper owns UAC)' }
-if ($yml -match 'allowElevation:\s*false') { Ok 'inner NSIS allowElevation false' } else { Fail 'allowElevation should be false' }
-if ($yml -match 'runAfterFinish:\s*false') { Ok 'runAfterFinish false (avoids second UAC on launch)' } else { Fail 'runAfterFinish should be false' }
+if ($yml -match '(?m)target:\s*portable\s*$') { Ok 'electron-builder portable target present' } else { Fail 'portable target missing' }
+if ($yml -notmatch '(?m)target:\s*nsis\s*$') { Ok 'electron-builder does not emit NSIS as Setup.exe' } else { Fail 'nsis target would overwrite Setup and delete shortcuts on reinstall' }
+if ($yml -match 'artifactName:\s*LoneWolf-Launcher\.exe') { Ok 'portable artifact LoneWolf-Launcher.exe' } else { Fail 'portable artifactName mismatch' }
+if ($yml -notmatch '(?i)upx:\s*true') { Ok 'UPX not enabled' } else { Fail 'UPX is enabled' }
+if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'assets\icon.ico'))) { Fail 'assets/icon.ico missing' } else { Ok 'assets/icon.ico exists' }
 $nsh = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'build\installer.nsh')
-if ($nsh -match 'RequestExecutionLevel user') { Ok 'inner NSIS RequestExecutionLevel user' } else { Fail 'installer.nsh must not re-request admin' }
+if ($nsh -match 'Do not ship NSIS as Setup') { Ok 'installer.nsh documents NSIS is not the public Setup' } else { Fail 'installer.nsh should warn against shipping NSIS as Setup' }
 $bootManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\app.manifest')
 if ($bootManifest -match 'level="requireAdministrator"') { Ok 'bootstrapper manifest requireAdministrator (single UAC)' } else { Fail 'installer/app.manifest missing requireAdministrator' }
-if ($yml -match 'createDesktopShortcut:\s*true') { Ok 'createDesktopShortcut true' } else { Fail 'createDesktopShortcut missing/false' }
-if ($yml -match 'artifactName:\s*LoneWolf-Launcher-Setup\.\$\{ext\}') { Ok 'NSIS artifact LoneWolf-Launcher-Setup' } else { Fail 'NSIS artifactName mismatch' }
-if ($yml -match 'artifactName:\s*LoneWolf-Launcher\.exe') { Ok 'portable artifact LoneWolf-Launcher.exe' } else { Fail 'portable artifactName mismatch' }
-if ($yml -match '(?m)target:\s*nsis\s*$') { Ok 'electron-builder nsis target present' } else { Fail 'nsis target missing' }
-if ($yml -notmatch '(?i)upx:\s*true') { Ok 'UPX not enabled' } else { Fail 'UPX is enabled' }
-if ($yml -match 'installerIcon:\s*assets/icon.ico') { Ok 'installer icon set' } else { Fail 'installerIcon missing' }
-if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'assets\icon.ico'))) { Fail 'assets/icon.ico missing' } else { Ok 'assets/icon.ico exists' }
-if ($yml -match 'include:\s*build/installer.nsh') { Ok 'nsis include installer.nsh' } else { Fail 'nsis include missing' }
+if ($bootManifest -match 'version="0\.0\.0\.0"') { Ok 'bootstrapper manifest identity is 0.0.0.0 (not launcher 5.4.x)' } else { Fail 'installer/app.manifest still versions the installer tool as the launcher' }
 
 # --- Updater channel isolation ---
 $updater = Join-Path $RepoRoot 'src\updater\Invoke-LoneWolfUpdater.ps1'
@@ -98,8 +95,11 @@ $launch = Invoke-UpdaterJson @(
     '-CurrentLauncherVersion', '5.4.5', '-CurrentPayloadVersion', '5.4.2',
     '-FixturePath', $fixture, '-ManifestFixturePath', $manifestFx
 )
-if ($launch.launcherUrl -match 'LoneWolf-Launcher-Setup\.exe$') { Ok 'launcher resolve -> setup exe' } else { Fail "launcher URL $($launch.launcherUrl)" }
-if ($launch.launcherUrl -match '/releases/') { Ok 'launcher Setup URL is a Releases asset' } else { Fail "launcher URL not a release: $($launch.launcherUrl)" }
+if ($launch.launcherUrl -match 'LoneWolf-Launcher\.exe$' -and $launch.launcherUrl -match 'raw\.githubusercontent\.com') { Ok 'launcher resolve -> portable exe from public source tree' } else { Fail "launcher URL $($launch.launcherUrl)" }
+if ($launch.launcherKind -eq 'portable') { Ok 'launcherKind is portable (not Setup)' } else { Fail "launcherKind=$($launch.launcherKind)" }
+if ($launch.launcherUrl -notmatch 'Setup\.exe$') { Ok 'launcher update URL is not Setup.exe' } else { Fail "launcher URL is Setup: $($launch.launcherUrl)" }
+if ($launch.setupUrl -match '/releases/download/installer/LoneWolf-Launcher-Setup\.exe$') { Ok 'setup URL is the single unversioned installer link' } else { Fail "setup URL $($launch.setupUrl)" }
+if ($launch.setupUrl -notmatch '5\.4') { Ok 'setup URL has no 5.4.x in the name' } else { Fail "setup URL still versioned: $($launch.setupUrl)" }
 if (-not $launch.quickUrl) { Ok 'launcher resolve does not return payload zip' } else { Fail "launcher leaked quickUrl $($launch.quickUrl)" }
 if ($launch.launcherUpdateAvailable -eq $true) { Ok 'launcher channel flags exe update 5.4.5 -> 5.4.7' } else { Fail 'launcherUpdateAvailable should be true' }
 if ($launch.updateAvailable -eq $true) { Ok 'compat updateAvailable is launcher-only and true here' } else { Fail 'updateAvailable should follow launcher channel' }
@@ -123,6 +123,9 @@ $updSrc = Get-Content -Raw -LiteralPath $updater
 if ($updSrc -notmatch '(?i)src\\powershell\\VERSION\.json') { Ok 'packaged updater does not read private VERSION.json for latest' } else { Fail 'updater still tied to private VERSION.json' }
 if ($updSrc -match 'Project-Lonewolf-Releases') { Ok 'updater targets public Project-Lonewolf-Releases' } else { Fail 'updater missing public repo' }
 if ($updSrc -notmatch '-Verb RunAs') { Ok 'updater does not Start-Process -Verb RunAs (no second UAC)' } else { Fail 'updater still uses -Verb RunAs on setup' }
+if ($updSrc -notmatch "ArgumentList '/S'") { Ok 'updater does not silently re-run Setup /S' } else { Fail 'updater still launches Setup /S (that deleted the desktop shortcut)' }
+if ($updSrc -match 'Ensure' -or $updSrc -match 'CommonDesktopDirectory') { Ok 'updater can refresh desktop shortcut if missing' } else { Fail 'updater never ensures desktop shortcut' }
+if ($updSrc -notmatch 'Remove-Item[^\n]*\.lnk') { Ok 'updater does not Remove-Item desktop lnk' } else { Fail 'updater deletes .lnk files' }
 
 $fxLatest = Get-Content -Raw -LiteralPath $manifestFx | ConvertFrom-Json
 if ($fxLatest.launcherVersion -eq '5.4.7' -and $fxLatest.payloadVersion -eq '5.4.2') { Ok 'latest.json fixture is version source (launcher 5.4.7 / payload 5.4.2)' } else { Fail 'latest.json fixture versions unexpected' }
@@ -132,9 +135,9 @@ if ($fxLatest.assets.setup -eq 'LoneWolf-Launcher-Setup.exe' -and $fxLatest.asse
     Ok 'public asset names: Setup on Releases, portable+payload in source tree'
 } else { Fail 'latest.json assets names mismatch' }
 if ($fxLatest.source -eq 'github-public-source') { Ok 'latest.json source is public git tree' } else { Fail 'latest.json source must be github-public-source' }
-if ($fxLatest.urls.payload -match 'raw\.githubusercontent\.com' -and $fxLatest.urls.portable -match 'raw\.githubusercontent\.com' -and $fxLatest.urls.setup -match '/releases/') {
-    Ok 'latest.json urls: payload/exe from source, Setup from Releases'
-} else { Fail 'latest.json urls must use raw source for payload/exe and Releases for Setup' }
+if ($fxLatest.urls.payload -match 'raw\.githubusercontent\.com' -and $fxLatest.urls.portable -match 'raw\.githubusercontent\.com' -and $fxLatest.urls.setup -match '/releases/download/installer/LoneWolf-Launcher-Setup\.exe$') {
+    Ok 'latest.json urls: payload/exe from source, Setup from stable installer tag'
+} else { Fail 'latest.json urls must use raw source for payload/exe and tag installer for Setup' }
 $fxRel = Get-Content -Raw -LiteralPath $fixture | ConvertFrom-Json
 $relNames = @($fxRel.assets | ForEach-Object { [string]$_.name })
 if ($relNames.Count -eq 1 -and $relNames[0] -eq 'LoneWolf-Launcher-Setup.exe') {
@@ -147,6 +150,16 @@ $instSrc = Get-Content -Raw -LiteralPath $inst
 $runAsHits = [regex]::Matches($instSrc, '-Verb RunAs').Count
 if ($runAsHits -eq 1) { Ok 'installer script has exactly one -Verb RunAs (bootstrap elevation)' } else { Fail "expected 1 -Verb RunAs in installer, found $runAsHits" }
 if ($instSrc -match '/quiet' -and $instSrc -match 'windowsdesktop-runtime-win-x64') { Ok 'installer uses Microsoft windowsdesktop-runtime-win-x64 quiet install' } else { Fail 'installer missing official .NET 8 Desktop Runtime quiet install' }
+if ($instSrc -match 'urls\.portable' -and $instSrc -match 'Get-PublicLatest') { Ok 'installer downloads portable from latest.json at install time' } else { Fail 'installer must fetch latest portable from latest.json' }
+if ($instSrc -notmatch 'Start-Process -FilePath \$InnerNsis' -and $instSrc -notmatch 'Inner installer exited') { Ok 'installer does not run inner NSIS' } else { Fail 'installer still launches InnerNsis (NSIS uninstall deleted the shortcut)' }
+if ($instSrc -notmatch 'Remove-Item[^\n]*\.lnk') { Ok 'installer does not Remove-Item desktop lnk' } else { Fail 'installer deletes .lnk files' }
+if ($instSrc -match 'Ensure-LwShortcuts') { Ok 'installer Ensure-LwShortcuts (create if missing, never delete)' } else { Fail 'installer missing Ensure-LwShortcuts' }
+if ($instSrc -match 'LoneWolf Installer') { Ok 'installer UI is LoneWolf Installer' } else { Fail 'installer chrome still says Launcher Setup 5.4.x' }
+$hostCs = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\LoneWolfSetupHost.cs')
+if ($hostCs -notmatch 'InnerNsis') { Ok 'Setup host does not pass baked InnerNsis' } else { Fail 'Setup host still injects InnerNsis from overlay' }
+if ($hostCs -notmatch 'PortableExe') { Ok 'Setup host does not bake PortableExe overlay' } else { Fail 'Setup host still passes overlay portable exe' }
+$repl = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src\powershell\Install-LauncherUpdate.ps1')
+if ($repl -match 'Ensure-LwUpdateShortcut' -and $repl -notmatch 'Remove-Item[^\n]*\.lnk') { Ok 'in-place launcher replace refreshes shortcut if missing and never deletes lnk' } else { Fail 'Install-LauncherUpdate shortcut persistence missing' }
 if ($instSrc -match "Start-Process -FilePath \`$\w+ -ArgumentList \`$(script:quietArgs) -Wait -PassThru" -or $instSrc -match 'ArgumentList \$script:quietArgs -Wait') {
     Ok 'inner .NET installer is started without -Verb RunAs'
 } else {
@@ -164,7 +177,10 @@ if ($plan.runtimeDisplayName -eq '.NET 8 Desktop Runtime' -and $plan.runtimeArch
 } else { Fail "DumpPlan runtime unexpected: $($planLine)" }
 if ($plan.childUsesRunAs -eq $false) { Ok 'DumpPlan childUsesRunAs is false' } else { Fail 'DumpPlan claims children use RunAs' }
 if ($plan.dotNetPresent -eq $true) { Ok 'DumpPlan MockDotNetPresent skips download' } else { Fail 'MockDotNetPresent should report runtime present' }
-if ($plan.dotNetInstallerUrl -match 'aka\.ms/dotnet/8\.0/windowsdesktop-runtime-win-x64') { Ok 'official aka.ms Desktop Runtime URL' } else { Fail "unexpected installer URL $($plan.dotNetInstallerUrl)" }
+if ($plan.downloadPortableAtInstall -eq $true) { Ok 'DumpPlan downloadPortableAtInstall is true' } else { Fail 'DumpPlan should download latest portable at install time' }
+if ($plan.innerNsisUsed -eq $false) { Ok 'DumpPlan innerNsisUsed is false' } else { Fail 'DumpPlan must not run inner NSIS' }
+if ($plan.setupUrl -match '/download/installer/LoneWolf-Launcher-Setup\.exe$') { Ok 'DumpPlan single setup URL' } else { Fail "DumpPlan setupUrl $($plan.setupUrl)" }
+if ($plan.installerProductName -eq 'LoneWolf Installer') { Ok 'DumpPlan product is LoneWolf Installer not launcher 5.4.x' } else { Fail 'DumpPlan installer product name unexpected' }
 
 $csproj = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'provisioner\LoneWolf.Provisioner\LoneWolf.Provisioner.csproj')
 if ($csproj -match '<TargetFramework>net8\.0-windows</TargetFramework>') { Ok 'provisioner TargetFramework net8.0-windows (runtime requirement source)' } else { Fail 'provisioner TFM mismatch' }
@@ -174,17 +190,20 @@ if ($pkg.scripts.'provisioner:publish' -match 'win-x64' -and $pkg.scripts.'provi
 
 try {
     $bootOut = Join-Path $env:TEMP ('LoneWolf-Launcher-Setup-e2e.exe')
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\compile-bootstrapper.ps1') -OutputExe $bootOut -SkipOverlay
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\compile-bootstrapper.ps1') -OutputExe $bootOut
     if (Test-Path -LiteralPath $bootOut) {
         $bl = (Get-Item -LiteralPath $bootOut).Length
         if ($bl -gt 10KB) { Ok "bootstrapper compiled ($([math]::Round($bl/1KB,1)) KB)" } else { Fail 'bootstrapper compile produced tiny file' }
         $bt = [System.Text.Encoding]::Unicode.GetString([System.IO.File]::ReadAllBytes($bootOut))
         if ($bt -match 'requireAdministrator') { Ok 'compiled Setup.exe manifest requests administrator once' } else { Skip 'could not see requireAdministrator in compiled Setup.exe' }
         $assertVer = Join-Path $RepoRoot 'scripts\Assert-LwExeVersion.ps1'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $assertVer -Path $bootOut -Expected '0.0.0'
+        if ($LASTEXITCODE -eq 0) { Ok 'bootstrapper FileVersion is 0.0.0.0 (installer tool unversioned)' } else { Fail 'bootstrapper FileVersion should be 0.0.0.0 not launcher 5.4.x' }
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $assertVer -Path $bootOut -Expected $lv
-        if ($LASTEXITCODE -eq 0) { Ok "bootstrapper FileVersion matches $lv" } else { Fail "bootstrapper FileVersion does not match $lv" }
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $assertVer -Path $bootOut -Expected '5.4.4'
-        if ($LASTEXITCODE -eq 1) { Ok "Assert-LwExeVersion rejects mismatched FileVersion (5.4.4 vs $lv)" } else { Fail "mismatch guard exit $LASTEXITCODE (expected 1)" }
+        if ($LASTEXITCODE -eq 1) { Ok "Assert-LwExeVersion rejects treating Setup as launcher $lv" } else { Fail "Setup must not match launcher FileVersion $lv" }
+        $assertOverlay = Join-Path $RepoRoot 'scripts\Assert-LwSetupOverlay.ps1'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $assertOverlay -Path $bootOut -Expected '0.0.0'
+        if ($LASTEXITCODE -eq 0) { Ok 'compiled Setup has no baked overlay' } else { Fail 'Setup overlay assert failed on fresh bootstrapper' }
         Remove-Item -LiteralPath $bootOut -Force -ErrorAction SilentlyContinue
     } else { Fail 'compile-bootstrapper did not write output exe' }
 } catch {
@@ -200,8 +219,11 @@ if ($pub -match 'raw\.githubusercontent\.com') { Ok 'publish latest.json uses ra
 if ($pub -match '\$releaseFiles = @\(\$setup\)') { Ok 'publish uploads Setup.exe only to gh release' } else { Fail 'publish must set releaseFiles to Setup only' }
 if ($pub -match 'git push origin HEAD' -and $pub -match 'Join-Path \$clone ''bin''') { Ok 'publish commits portable exe into public source tree' } else { Fail 'publish must git-push bin/LoneWolf-Launcher.exe' }
 if ($pub -match 'release delete-asset') { Ok 'publish drops leftover non-Setup release assets' } else { Fail 'publish should delete extra release assets' }
-if ($pub -match 'Assert-LwExeVersion' -and $pub -match 'REFUSE') { Ok 'publish refuses mismatched FileVersion' } else { Fail 'publish script missing FileVersion guard' }
-if ($pub -match 'Assert-LwSetupOverlay') { Ok 'publish asserts Setup overlay inner NSIS FileVersion' } else { Fail 'publish missing overlay inner-installer version guard' }
+if ($pub -match "Tag = 'installer'" -or $pub -match 'Tag = ''installer''') { Ok 'publish uses stable installer tag' } else { Fail 'publish must default Tag to installer not v5.4.x' }
+if ($pub -match 'releases/download/installer/LoneWolf-Launcher-Setup\.exe') { Ok 'publish latest.json setup URL is the single installer link' } else { Fail 'publish urls.setup must be unversioned tag installer' }
+if ($pub -match 'Assert-LwExeVersion' -and $pub -match 'REFUSE') { Ok 'publish refuses mismatched portable FileVersion' } else { Fail 'publish script missing FileVersion guard' }
+if ($pub -match 'Assert-LwSetupOverlay') { Ok 'publish asserts Setup is unversioned bootstrapper (no overlay)' } else { Fail 'publish missing Setup identity guard' }
+if ($pub -notmatch 'v\$launcherVersion') { Ok 'publish does not create v+launcherVersion Setup tags' } else { Fail 'publish still versions the installer tag as v+launcherVersion' }
 if ($pub -notmatch 'DEV') { Ok 'publish script has no DEV marker in source' } else { Fail 'publish script still mentions DEV' }
 
 $mainSrc = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'main.js')
@@ -299,8 +321,8 @@ if ($liveOk) {
         $extra = @($liveNames | Where-Object { $_ -ne 'LoneWolf-Launcher-Setup.exe' })
         if ($liveNames.Count -eq 1 -and $liveNames[0] -eq 'LoneWolf-Launcher-Setup.exe') {
             Ok 'live latest release assets are Setup.exe only'
-        } elseif ($latestRel.tag_name -eq 'v5.4.6') {
-            Skip 'latest is still v5.4.6 with extra assets - run npm run publish:public for 5.4.7'
+        } elseif ($latestRel.tag_name -match '^v5\.4') {
+            Skip ("latest GitHub pointer is still {0} - publish tag installer and --latest" -f $latestRel.tag_name)
         } elseif ($extra.Count -gt 0) {
             Fail ("live latest release has extra assets: {0}" -f ($extra -join ', '))
         } else {

@@ -1565,27 +1565,34 @@ function schedulePortableExeReplace(tmpExe) {
       'utf8')
   } catch (_) {}
 
-  const cmdFilePath = path.join(os.tmpdir(), 'lonewolf-update.cmd')
-  const cmdLines = [
-    '@echo off',
-    'setlocal',
-    `set "LOG=${installerLog}"`,
-    `set "SRC=${tmpExe}"`,
-    `set "DST=${currentExe}"`,
-    'echo [%DATE% %TIME%] CMD updater started >> "%LOG%"',
-    'ping -n 4 127.0.0.1 > nul',
-    'copy /Y "%SRC%" "%DST%"',
-    'if errorlevel 1 (echo [%DATE% %TIME%] ERROR: copy failed >> "%LOG%" & exit /b 1)',
-    'start "" "%DST%"',
-    'del "%SRC%" 2>nul',
-    'endlocal'
+  const replacePs = path.join(PS_DIR, 'Install-LauncherUpdate.ps1')
+  const psExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const args = [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', replacePs,
+    '-SourceExe', tmpExe,
+    '-TargetExe', currentExe,
+    '-OldPid', String(pid)
   ]
-  fs.writeFileSync(cmdFilePath, cmdLines.join('\r\n'), 'utf8')
-  const vbsPath = path.join(os.tmpdir(), 'lonewolf-update.vbs')
   try {
-    fs.writeFileSync(vbsPath, `Set oShell = CreateObject("WScript.Shell")\r\noShell.Run """${cmdFilePath}""", 0, False\r\n`, 'utf8')
-    spawn('wscript.exe', [vbsPath], { detached: true, stdio: 'ignore' }).unref()
-  } catch (_) {
+    spawn(psExe, args, { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+  } catch (e) {
+    const cmdFilePath = path.join(os.tmpdir(), 'lonewolf-update.cmd')
+    const cmdLines = [
+      '@echo off',
+      'setlocal',
+      `set "LOG=${installerLog}"`,
+      `set "SRC=${tmpExe}"`,
+      `set "DST=${currentExe}"`,
+      'echo [%DATE% %TIME%] CMD updater started >> "%LOG%"',
+      'ping -n 4 127.0.0.1 > nul',
+      'copy /Y "%SRC%" "%DST%"',
+      'if errorlevel 1 (echo [%DATE% %TIME%] ERROR: copy failed >> "%LOG%" & exit /b 1)',
+      'start "" "%DST%"',
+      'del "%SRC%" 2>nul',
+      'endlocal'
+    ]
+    fs.writeFileSync(cmdFilePath, cmdLines.join('\r\n'), 'utf8')
     spawn('cmd.exe', ['/c', cmdFilePath], { detached: true, stdio: 'ignore' }).unref()
   }
   setTimeout(() => app.quit(), 500)
@@ -1670,15 +1677,17 @@ ipcMain.handle('update:install', async (event, _params) => {
   const hq = await getHqNetworkStatus()
   if (hq.hqBlocked) return hqDeniedPayload()
   try {
-    const result = await runPublicUpdater(['-Action', 'launcher'])
+    const result = await runPublicUpdater([
+      '-Action', 'launcher',
+      '-TargetExe', process.env.PORTABLE_EXECUTABLE_FILE || process.execPath
+    ])
     if (!result || !result.ok) return { ok: false, error: (result && result.error) || 'Launcher update failed' }
-    if (result.launcherKind === 'setup') {
-      setTimeout(() => app.quit(), 800)
-      return { ok: true, kind: 'setup' }
-    }
     if (result.downloadedPath && result.launcherKind === 'portable') {
       schedulePortableExeReplace(result.downloadedPath)
       return { ok: true, kind: 'portable' }
+    }
+    if (result.launcherKind === 'setup') {
+      return { ok: false, error: 'Launcher Update must not re-run Setup (that removed the desktop shortcut).' }
     }
     return { ok: false, error: 'No launcher asset downloaded' }
   } catch (e) {

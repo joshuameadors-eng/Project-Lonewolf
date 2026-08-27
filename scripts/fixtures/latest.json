@@ -24,7 +24,7 @@
     "manifest": "latest.json"
   },
   "urls": {
-    "setup": "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest/download/LoneWolf-Launcher-Setup.exe",
+    "setup": "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe",
     "portable": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe",
     "payload": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/FirstBase-payload.zip",
     "manifest": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"

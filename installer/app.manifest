@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="5.4.6.0" name="LoneWolf.Launcher.Setup" type="win32"/>
-  <description>Project LoneWolf Launcher Setup</description>
+  <assemblyIdentity version="0.0.0.0" name="LoneWolf.Installer" type="win32"/>
+  <description>LoneWolf Installer (FirstBase). Installs the latest launcher; this file is not versioned with the app.</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

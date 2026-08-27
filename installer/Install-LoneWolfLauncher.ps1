@@ -1,11 +1,15 @@
 #Requires -Version 5.1
 <#
-  Styled LoneWolf Launcher bootstrapper.
+  LoneWolf Installer / FirstBase installer (unversioned tool).
   Elevation: one UAC at the start (this script's RunAs relaunch, or the compiled
   Setup.exe app.manifest requireAdministrator). Child steps never use RunAs:
-  .NET runtime /quiet, NSIS /S, file copy, shortcuts.
+  .NET runtime /quiet, file copy, shortcuts.
 
-  Runtime: .NET 8 Desktop Runtime x64 — see installer/dotnet-runtime.json
+  Installs dependencies plus the latest portable launcher from public latest.json
+  (urls.portable / bin/LoneWolf-Launcher.exe). Does not bake a launcher version
+  into this tool. Does not run NSIS (NSIS uninstall deleted the desktop shortcut).
+
+  Runtime: .NET 8 Desktop Runtime x64 - see installer/dotnet-runtime.json
   (provisioner is net8.0-windows, win-x64, not self-contained).
 #>
 [CmdletBinding()]
@@ -106,6 +110,31 @@ function New-LwShortcut {
     Set-ShortcutRunAsAdmin -LnkPath $LnkPath
 }
 
+function Test-ShortcutPointsAt {
+    param([string]$LnkPath, [string]$Target)
+    if (-not (Test-Path -LiteralPath $LnkPath)) { return $false }
+    try {
+        $w = New-Object -ComObject WScript.Shell
+        $s = $w.CreateShortcut($LnkPath)
+        return ([string]$s.TargetPath -eq $Target)
+    } catch { return $false }
+}
+
+function Ensure-LwShortcuts {
+    param([string]$ExePath)
+    if (-not $ExePath -or -not (Test-Path -LiteralPath $ExePath)) { return }
+    $workDir = Split-Path $ExePath
+    $desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Project LoneWolf Launcher.lnk'
+    $sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\Project LoneWolf Launcher.lnk'
+    $smDir = Split-Path $sm
+    if (-not (Test-Path -LiteralPath $smDir)) { New-Item -ItemType Directory -Path $smDir -Force | Out-Null }
+    foreach ($lnk in @($desk, $sm)) {
+        if (-not (Test-Path -LiteralPath $lnk) -or -not (Test-ShortcutPointsAt -LnkPath $lnk -Target $ExePath)) {
+            New-LwShortcut -LnkPath $lnk -Target $ExePath -WorkDir $workDir
+        }
+    }
+}
+
 $script:rt = Get-RuntimeConfig
 if (-not $DotNetInstallerUrl) { $DotNetInstallerUrl = [string]$script:rt.akaMsUrl }
 $script:runtimeDisplay = [string]$script:rt.displayName
@@ -124,11 +153,16 @@ $plan = [ordered]@{
     nsisReRequestAdmin   = $false
     publicLatestJson     = $LatestJsonUrl
     setupAsset           = 'LoneWolf-Launcher-Setup.exe'
+    setupUrl             = 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe'
     portableAsset        = 'LoneWolf-Launcher.exe'
     payloadAsset         = 'FirstBase-payload.zip'
     manifestAsset        = 'latest.json'
     dotNetPresent        = [bool](Test-DotNet8DesktopRuntime -Cfg $script:rt)
     skipDownloadIfPresent= $true
+    downloadPortableAtInstall = $true
+    innerNsisUsed        = $false
+    stableInstallDir     = $InstallDir
+    installerProductName = 'LoneWolf Installer'
 }
 
 if ($DumpPlan) {
@@ -147,7 +181,6 @@ if (-not $AlreadyElevated -and -not (Test-IsAdmin)) {
     if ($Headless) { $argList += '-Headless' }
     if ($SkipDotNetDownload) { $argList += '-SkipDotNetDownload' }
     if ($InstallDir) { $argList += '-InstallDir'; $argList += $InstallDir }
-    if ($InnerNsis) { $argList += '-InnerNsis'; $argList += $InnerNsis }
     if ($PortableExe) { $argList += '-PortableExe'; $argList += $PortableExe }
     $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Verb RunAs -ArgumentList $argList -PassThru -Wait
     exit $(if ($p) { $p.ExitCode } else { 1 })
@@ -199,7 +232,7 @@ function Show-StyledUi {
     $muted = [System.Drawing.Color]::FromArgb(148, 163, 184)
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Project LoneWolf Launcher Setup'
+    $form.Text = 'LoneWolf Installer'
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -249,7 +282,7 @@ function Show-StyledUi {
     $form.Controls.Add($title)
 
     $sub = New-Object System.Windows.Forms.Label
-    $sub.Text = 'FirstBase Deployment Suite'
+    $sub.Text = 'FirstBase installer - installs the latest launcher'
     $sub.ForeColor = $muted
     $sub.Location = New-Object System.Drawing.Point(190, 50)
     $sub.AutoSize = $true
@@ -348,17 +381,11 @@ function Get-BrowserDownloadUrl {
 }
 
 function Install-LauncherFiles {
-    Update-Ui -Step 2 -Pct 55 -Status 'Installing LoneWolf Launcher files...'
-    if ($InnerNsis -and (Test-Path -LiteralPath $InnerNsis)) {
-        $nsisArgs = @('/S')
-        if ($InstallDir) { $nsisArgs += "/D=$InstallDir" }
-        $p = Start-Process -FilePath $InnerNsis -ArgumentList $nsisArgs -Wait -PassThru
-        if ($p.ExitCode -ne 0) { throw "Inner installer exited $($p.ExitCode)" }
-        return
-    }
+    Update-Ui -Step 2 -Pct 55 -Status 'Installing the latest LoneWolf Launcher (portable exe)...'
+    $null = $InnerNsis
     $src = $PortableExe
     if (-not $src -or -not (Test-Path -LiteralPath $src)) {
-        Update-Ui -Step 2 -Pct 50 -Status 'Downloading LoneWolf-Launcher.exe from public source tree...'
+        Update-Ui -Step 2 -Pct 50 -Status 'Downloading latest LoneWolf-Launcher.exe from public source (latest.json)...'
         $man = Get-PublicLatest
         $url = $null
         if ($man -and $man.urls -and $man.urls.portable) { $url = [string]$man.urls.portable }
@@ -375,19 +402,14 @@ function Install-LauncherFiles {
 }
 
 function Install-Shortcuts {
-    Update-Ui -Step 3 -Pct 85 -Status 'Creating desktop and Start Menu shortcuts (Run as Administrator)...'
+    Update-Ui -Step 3 -Pct 85 -Status 'Ensuring desktop and Start Menu shortcuts (Run as Administrator)...'
     $exe = Join-Path $InstallDir 'LoneWolf-Launcher.exe'
     if (-not (Test-Path -LiteralPath $exe)) {
         $alt = Get-ChildItem -LiteralPath $InstallDir -Filter 'LoneWolf-Launcher.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($alt) { $exe = $alt.FullName; $InstallDir = Split-Path $exe }
     }
     if (-not (Test-Path -LiteralPath $exe)) { throw ("Launcher exe not found under {0}" -f $InstallDir) }
-    $desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Project LoneWolf Launcher.lnk'
-    $sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\Project LoneWolf Launcher.lnk'
-    New-LwShortcut -LnkPath $desk -Target $exe -WorkDir (Split-Path $exe)
-    $smDir = Split-Path $sm
-    if (-not (Test-Path -LiteralPath $smDir)) { New-Item -ItemType Directory -Path $smDir -Force | Out-Null }
-    New-LwShortcut -LnkPath $sm -Target $exe -WorkDir (Split-Path $exe)
+    Ensure-LwShortcuts -ExePath $exe
 }
 
 function Invoke-InstallSteps {
@@ -410,7 +432,7 @@ try {
 } catch {
     $msg = $_.Exception.Message
     if ($script:ui.form) {
-        [System.Windows.Forms.MessageBox]::Show($msg, 'LoneWolf Setup', 'OK', 'Error') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($msg, 'LoneWolf Installer', 'OK', 'Error') | Out-Null
         $script:ui.form.Close()
     } elseif (-not $Silent) {
         Write-Error $msg

@@ -977,10 +977,10 @@ const settingsModal = (() => {
 
             <div class="settings-section">
               <div class="settings-section-title">Updates</div>
-              <p class="settings-help">Quick Update pulls scripts/payload from the public GitHub source tree (not Setup.exe). Launcher Update installs a new exe from GitHub Releases. They are separate. The ISO share is not used for launcher versioning.</p>
+              <p class="settings-help">Quick Update pulls scripts/payload from the public GitHub source tree (not Setup.exe). Launcher Update replaces LoneWolf-Launcher.exe at the same install path and never re-runs Setup. They are separate. The ISO share is not used for launcher versioning.</p>
               <div class="settings-row settings-row--btns">
                 <button class="btn-dev-sm" id="settings-quick-update" title="Payload and scripts only; does not replace LoneWolf-Launcher.exe">Quick Update</button>
-                <button class="btn-dev-sm" id="settings-launcher-update" title="Download installer/exe from public Releases">Launcher Update</button>
+                <button class="btn-dev-sm" id="settings-launcher-update" title="Replace LoneWolf-Launcher.exe in place from public source; does not run Setup">Launcher Update</button>
               </div>
             </div>
 

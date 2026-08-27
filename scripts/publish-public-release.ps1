@@ -15,8 +15,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Tag = '',
-    [string]$Title = '',
+    [string]$Tag = 'installer',
+    [string]$Title = 'LoneWolf Installer',
     [string]$PrivateRepoRoot = '',
     [switch]$SkipPayloadZip,
     [switch]$CompileBootstrapper,
@@ -57,8 +57,9 @@ $payloadVersion  = if ($verJson.PSObject.Properties['payloadVersion'] -and $verJ
 } else {
     [string]$verJson.version
 }
-if (-not $Tag) { $Tag = "v$launcherVersion" }
-if (-not $Title) { $Title = "LoneWolf Launcher $launcherVersion" }
+if (-not $Tag) { $Tag = 'installer' }
+if (-not $Title) { $Title = 'LoneWolf Installer' }
+$setupDownloadUrl = "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe"
 
 $owner = 'joshuameadors-eng'
 $repo  = 'Project-Lonewolf-Releases'
@@ -82,6 +83,7 @@ $manifest = [ordered]@{
     channel         = 'release'
     source          = 'github-public-source'
     latestReleaseUrl = $latestPage
+    installerTag    = 'installer'
     manifestUrl     = "$rawBase/latest.json"
     contentsApiUrl  = "https://api.github.com/repos/$full/contents/latest.json"
     defaultBranch   = $defaultBranch
@@ -102,7 +104,7 @@ $manifest = [ordered]@{
         manifest    = 'latest.json'
     }
     urls            = [ordered]@{
-        setup    = "$latestPage/download/LoneWolf-Launcher-Setup.exe"
+        setup    = $setupDownloadUrl
         portable = "$rawBase/bin/LoneWolf-Launcher.exe"
         payload  = "$rawBase/FirstBase-payload.zip"
         manifest = "$rawBase/latest.json"
@@ -141,20 +143,18 @@ function Assert-PublishExe {
     }
 }
 
-Assert-PublishExe -ExePath $setup -Label 'LoneWolf-Launcher-Setup.exe'
 Assert-PublishExe -ExePath $portable -Label 'LoneWolf-Launcher.exe'
 $unpackedExe = Join-Path $dist 'win-unpacked\LoneWolf-Launcher.exe'
 if (Test-Path -LiteralPath $unpackedExe) {
     Assert-PublishExe -ExePath $unpackedExe -Label 'win-unpacked LoneWolf-Launcher.exe'
 }
-$innerNsis = Join-Path $dist 'LoneWolf-Launcher-Nsis.exe'
-if (Test-Path -LiteralPath $innerNsis) {
-    Assert-PublishExe -ExePath $innerNsis -Label 'LoneWolf-Launcher-Nsis.exe'
+if (Test-Path -LiteralPath (Join-Path $dist 'LoneWolf-Launcher-Nsis.exe')) {
+    Write-Warning 'dist\\LoneWolf-Launcher-Nsis.exe is leftover and is not published.'
 }
 $assertOverlay = Join-Path $PrivateRepoRoot 'scripts\Assert-LwSetupOverlay.ps1'
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $assertOverlay -Path $setup -Expected $launcherVersion
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $assertOverlay -Path $setup -Expected '0.0.0'
 if ($LASTEXITCODE -ne 0) {
-    throw ("REFUSE: Setup overlay inner installer does not match publish version {0}. Outer Setup FileVersion is not enough." -f $launcherVersion)
+    throw 'REFUSE: Setup is not the unversioned bootstrapper (no overlay, FileVersion 0.0.0.0). Compile with scripts/compile-bootstrapper.ps1. Do not advertise Setup as launcher 5.4.x.'
 }
 
 $exeBytes = (Get-Item -LiteralPath $portable).Length
@@ -222,9 +222,9 @@ try {
     $st = & $git status --porcelain
     if ($st) {
         $commitMsg = @"
-Publish LoneWolf $launcherVersion source assets.
+Publish LoneWolf launcher $launcherVersion / payload $payloadVersion source assets.
 
-Payload, portable exe, and latest.json live in the git tree. Releases page is Setup only.
+Payload, portable exe, and latest.json live in the git tree. Releases page is the unversioned installer tool only.
 "@
         $an = (& $git log -1 --format='%an').Trim()
         $ae = (& $git log -1 --format='%ae').Trim()
@@ -243,16 +243,22 @@ Payload, portable exe, and latest.json live in the git tree. Releases page is Se
 }
 
 $notes = @"
-launcherVersion=$launcherVersion
+installer=LoneWolf-Launcher-Setup.exe (unversioned tool, tag installer)
+launcherVersion=$launcherVersion (portable exe in source bin/)
 payloadVersion=$payloadVersion
 dotnet=$($rt.displayName) ($($rt.arch))
 
-This release asset is the installer only: LoneWolf-Launcher-Setup.exe
+This release asset is the installer tool only: LoneWolf-Launcher-Setup.exe
+It installs .NET if needed and downloads the latest portable from latest.json at install time.
+
+Single installer URL:
+$setupDownloadUrl
 
 Payload scripts and portable LoneWolf-Launcher.exe are files in the public repository (not attached here).
-Versioning: latest.json in the source tree (raw.githubusercontent.com). Packaged Quick Update pulls payload from that tree.
+Versioning: latest.json in the source tree (raw.githubusercontent.com).
 
-Unsigned: SmartScreen may warn. One UAC for the whole install (.NET + files + shortcut).
+Unsigned: SmartScreen may warn. One UAC for the whole first install (.NET + files + shortcut).
+Launcher Update replaces the portable exe in place and does not re-run this Setup.
 "@
 
 $releaseFiles = @($setup)
@@ -265,9 +271,11 @@ if ($viewExit -eq 0 -and $existing) {
     Write-Host "Release $Tag exists - uploading Setup.exe only (clobber)."
     & $gh release upload $Tag @releaseFiles --repo $full --clobber
     if ($LASTEXITCODE -ne 0) { throw "gh release upload $Tag failed" }
+    & $gh release edit $Tag --repo $full --title $Title --notes $notes --latest
+    if ($LASTEXITCODE -ne 0) { Write-Warning "gh release edit --latest failed; installer tag may not be the GitHub latest pointer." }
 } else {
     Write-Host "Creating release $Tag on $full (Setup.exe only)"
-    & $gh release create $Tag @releaseFiles --repo $full --title $Title --notes $notes
+    & $gh release create $Tag @releaseFiles --repo $full --title $Title --notes $notes --latest
     if ($LASTEXITCODE -ne 0) { throw "gh release create $Tag failed" }
 }
 
@@ -285,6 +293,7 @@ if ($listJson) {
 }
 
 Write-Host "Published Setup to https://github.com/$full/releases/tag/$Tag"
-Write-Host "Latest installer: $latestPage"
+Write-Host "Single installer URL: $setupDownloadUrl"
+Write-Host "Latest page: $latestPage"
 Write-Host "Public source: payload/, powershell/, FirstBase-payload.zip, bin/LoneWolf-Launcher.exe, latest.json"
-Write-Host "Release asset (only): LoneWolf-Launcher-Setup.exe"
+Write-Host "Release asset (only): LoneWolf-Launcher-Setup.exe (unversioned installer tool)"
