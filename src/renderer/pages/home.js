@@ -68,7 +68,7 @@
       id: 'media-creator',
       icon: USB_ICON,
       title: 'Bootable Media',
-      desc: 'Bootable USB from share-staged or local ISO images.',
+      desc: 'Mount any ISO, or make bootable USB from Linux, Windows, or other local ISO files.',
       status: 'active',
       statusLabel: 'Active',
       route: '#builder?type=media-creator'

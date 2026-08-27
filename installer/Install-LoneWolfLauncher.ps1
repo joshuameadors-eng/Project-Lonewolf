@@ -120,6 +120,86 @@ function Test-ShortcutPointsAt {
     } catch { return $false }
 }
 
+function Get-SmartAppControlGuideText {
+    return @'
+Why this started happening
+Install and update now download unsigned Windows programs from GitHub
+(raw bin/LoneWolf-Launcher.exe and the unversioned Setup). Smart App Control
+treats those as untrusted, so it can block Setup and the portable exe even
+when that did not happen before. Signing the files (Azure code signing, about
+$10/month) is the real fix. Do not turn off Microsoft Defender.
+
+1. Check Smart App Control mode first
+   Open Windows Security -> App & browser control -> Smart App Control.
+   That is the usual Windows 11 path.
+
+2. If the mode is Evaluation
+   You can usually turn Smart App Control Off from that page.
+
+3. If the mode is On (enforcement)
+   Off is often greyed out. Microsoft commonly requires a PC reset to turn it
+   off. This app cannot promise a one-click Off. If Off is unavailable, do not
+   hunt for a hidden switch. Use More info -> Run anyway on the block dialog
+   if Windows still offers it, or SmartScreen "Run anyway" when that dialog
+   appears instead.
+
+4. SmartScreen (separate from Smart App Control)
+   "Windows protected your PC" -> More info -> Run anyway, only if you trust
+   this installer. That does not disable Defender.
+
+Do not disable Windows Defender / Microsoft Defender Antivirus to get past this.
+'@
+}
+
+function Test-LikelySacOrSmartScreenFail {
+    param([string]$Message)
+    if (-not $Message) { return $false }
+    return [bool]($Message -match 'SmartScreen|Smart App Control|untrusted|could not be downloaded|WebException|403|aborted|SSL|blocked|virus|threat|Unauthorized|0x80070005|being used by another process|The request was aborted')
+}
+
+function Show-InstallErrorUi {
+    param([string]$Message)
+    $showGuide = Test-LikelySacOrSmartScreenFail -Message $Message
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'LoneWolf Installer'
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.Width = 560
+    $form.Height = $(if ($showGuide) { 620 } else { 220 })
+    $form.BackColor = [System.Drawing.Color]::FromArgb(24, 24, 32)
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.ForeColor = [System.Drawing.Color]::FromArgb(248, 113, 113)
+    $lbl.Location = New-Object System.Drawing.Point(16, 12)
+    $lbl.Size = New-Object System.Drawing.Size(520, 48)
+    $lbl.Text = $Message
+    $form.Controls.Add($lbl)
+
+    if ($showGuide) {
+        $box = New-Object System.Windows.Forms.TextBox
+        $box.Multiline = $true
+        $box.ReadOnly = $true
+        $box.ScrollBars = 'Vertical'
+        $box.BackColor = [System.Drawing.Color]::FromArgb(18, 18, 24)
+        $box.ForeColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
+        $box.Font = New-Object System.Drawing.Font('Consolas', 8)
+        $box.Location = New-Object System.Drawing.Point(16, 64)
+        $box.Size = New-Object System.Drawing.Size(512, 460)
+        $box.Text = Get-SmartAppControlGuideText
+        $form.Controls.Add($box)
+    }
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'OK'
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $ok.Location = New-Object System.Drawing.Point(430, $(if ($showGuide) { 536 } else { 140 }))
+    $form.Controls.Add($ok)
+    $form.AcceptButton = $ok
+    [void]$form.ShowDialog()
+}
+
 function Ensure-LwShortcuts {
     param([string]$ExePath)
     if (-not $ExePath -or -not (Test-Path -LiteralPath $ExePath)) { return }
@@ -315,11 +395,11 @@ function Show-StyledUi {
     $form.Controls.Add($lbl)
 
     $note = New-Object System.Windows.Forms.Label
-    $note.Text = 'Unsigned installer. Windows SmartScreen may warn until reputation builds. Defender is not disabled.'
+    $note.Text = 'Unsigned. GitHub-downloaded Setup and portable exe can be blocked by Smart App Control. See the error page if download fails. Defender is not disabled.'
     $note.ForeColor = $muted
     $note.Font = New-Object System.Drawing.Font('Segoe UI', 8)
-    $note.Location = New-Object System.Drawing.Point(190, 348)
-    $note.Size = New-Object System.Drawing.Size(340, 48)
+    $note.Location = New-Object System.Drawing.Point(190, 340)
+    $note.Size = New-Object System.Drawing.Size(340, 56)
     $form.Controls.Add($note)
 
     $form.Show()
@@ -383,6 +463,10 @@ function Get-BrowserDownloadUrl {
 function Install-LauncherFiles {
     Update-Ui -Step 2 -Pct 55 -Status 'Installing the latest LoneWolf Launcher (portable exe)...'
     $null = $InnerNsis
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    }
+    $dest = Join-Path $InstallDir 'LoneWolf-Launcher.exe'
     $src = $PortableExe
     if (-not $src -or -not (Test-Path -LiteralPath $src)) {
         Update-Ui -Step 2 -Pct 50 -Status 'Downloading latest LoneWolf-Launcher.exe from public source (latest.json)...'
@@ -392,13 +476,13 @@ function Install-LauncherFiles {
         if (-not $url) {
             $url = 'https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe'
         }
-        $src = Join-Path $env:TEMP 'LoneWolf-Launcher.exe'
+        $src = Join-Path $InstallDir 'LoneWolf-Launcher.exe.incoming'
         Invoke-WebRequest -Uri $url -OutFile $src -UseBasicParsing -Headers @{ 'User-Agent' = 'LoneWolf-Launcher-Setup' }
     }
-    if (-not (Test-Path -LiteralPath $InstallDir)) {
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    Copy-Item -LiteralPath $src -Destination $dest -Force
+    if ([string]$src -like '*.incoming') {
+        Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
     }
-    Copy-Item -LiteralPath $src -Destination (Join-Path $InstallDir 'LoneWolf-Launcher.exe') -Force
 }
 
 function Install-Shortcuts {
@@ -432,8 +516,10 @@ try {
 } catch {
     $msg = $_.Exception.Message
     if ($script:ui.form) {
-        [System.Windows.Forms.MessageBox]::Show($msg, 'LoneWolf Installer', 'OK', 'Error') | Out-Null
-        $script:ui.form.Close()
+        try { $script:ui.form.Close() } catch { }
+    }
+    if (-not $Silent -and -not $Headless) {
+        Show-InstallErrorUi -Message $msg
     } elseif (-not $Silent) {
         Write-Error $msg
     }

@@ -210,6 +210,28 @@ public static class Program
             return 0;
         }
 
+        if (args.Length > 0 && args[0].Equals("iso-header", StringComparison.OrdinalIgnoreCase))
+        {
+            var buf = new byte[IsoMediaKind.HeaderBytesNeeded];
+            buf[510] = 0x55;
+            buf[511] = 0xAA;
+            var cd = System.Text.Encoding.ASCII.GetBytes("CD001");
+            Buffer.BlockCopy(cd, 0, buf, 0x8001, cd.Length);
+            var h = IsoMediaKind.InspectHeader(buf);
+            if (!h.Hybrid || !h.Iso9660 || !h.Mbr)
+            {
+                Console.Error.WriteLine("FAIL: hybrid header not detected");
+                return 1;
+            }
+            if (IsoMediaKind.Plan(h, windowsLayout: true) != IsoWriteKind.WindowsExtract)
+            {
+                Console.Error.WriteLine("FAIL: windows layout should win");
+                return 1;
+            }
+            Console.WriteLine("iso-header: hybrid and windows-priority passed");
+            return 0;
+        }
+
         return Unknown("selftest");
     }
 

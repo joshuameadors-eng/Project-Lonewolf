@@ -3,8 +3,10 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { spawn, exec } = require('child_process')
-const { evaluateHqNetwork, HQ_BLOCKED_MESSAGE } = require('./src/launcher/hqNetworkGuard')
+const { evaluateHqNetwork, HQ_BLOCKED_MESSAGE, sourceNeedsHq, isUncPath } = require('./src/launcher/hqNetworkGuard')
 const { recommendUsbBuildMode } = require('./src/launcher/recommendUsbBuildMode')
+const { detectIsoMediaKindFromFile, planIsoWriteMode } = require('./src/launcher/isoMediaKind')
+const { looksLikeBlockedDownload } = require('./src/launcher/smartAppControlGuide')
 
 // ─── Early launch log (runs before anything else — helps diagnose silent crashes) ──
 const LAUNCH_LOG = path.join(os.tmpdir(), 'lonewolf-launch.log')
@@ -835,11 +837,15 @@ ipcMain.handle('build:start', async (event, params) => {
   const localBuild = !IS_PACKED && (!!params.localBuild || devLocalBuildEnabled)
   const localRemotePath = localBuild ? path.join(app.getAppPath(), 'Remote') : null
   if (!localBuild) {
-    const hq = await getHqNetworkStatus()
-    if (hq.hqBlocked) {
-      return { started: false, hqBlocked: true, error: HQ_BLOCKED_MESSAGE }
+    const wt = String(params.workflowType || '').toUpperCase()
+    const localMediaIso = wt === 'MEDIA-CREATOR' && params.sourcePath && !sourceNeedsHq(params.sourcePath)
+    if (!localMediaIso) {
+      const hq = await getHqNetworkStatus()
+      if (hq.hqBlocked) {
+        return { started: false, hqBlocked: true, error: HQ_BLOCKED_MESSAGE }
+      }
+      ensureShareCredentials()
     }
-    ensureShareCredentials()
   }
 
   const cacheRootSuffix = workflowType.toUpperCase()
@@ -1473,7 +1479,7 @@ function quickAnalyzeSource(sourcePath, origin) {
     : (upper.includes('AMD64') || upper.includes('X64')) ? 'AMD64'
       : null
 
-  return {
+  const result = {
     path: sourcePath,
     origin: origin || (sourcePath.startsWith('\\\\') ? 'share' : 'local'),
     buildMode,
@@ -1483,6 +1489,21 @@ function quickAnalyzeSource(sourcePath, origin) {
     deepAnalyzed: false,
     warnings: buildMode === 'none' ? ['Path not found or unsupported type'] : []
   }
+
+  if (buildMode === 'iso' && stat && stat.isFile()) {
+    try {
+      const header = detectIsoMediaKindFromFile(sourcePath)
+      const plan = planIsoWriteMode(header, false)
+      result.writeMode = plan.writeMode
+      result.iso9660 = header.iso9660
+      result.hybrid = header.hybrid
+      if (header.hybrid) {
+        result.warnings.push('Looks like a hybrid ISO. Bootable USB will use a raw image write (not Windows layout).')
+      }
+    } catch (_) {}
+  }
+
+  return result
 }
 
 ipcMain.handle('sources:analyze', async (_event, { path: sourcePath, origin, deep }) => {
@@ -1514,6 +1535,82 @@ ipcMain.handle('sources:browse', async (_event, { kind }) => {
   return result.filePaths[0]
 })
 
+const mountedIsoByPath = new Map()
+
+function quotePsLiteral (p) {
+  return String(p || '').replace(/'/g, "''")
+}
+
+async function runTempPs (scriptBody) {
+  const tmp = path.join(os.tmpdir(), 'lw-iso-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.ps1')
+  fs.writeFileSync(tmp, scriptBody, 'utf8')
+  try {
+    return await runPSCollect(tmp, [])
+  } finally {
+    try { fs.unlinkSync(tmp) } catch (_) {}
+  }
+}
+
+ipcMain.handle('iso:mount', async (_event, { path: isoPath }) => {
+  try {
+    if (!isoPath) return { ok: false, error: 'No ISO selected.' }
+    if (!fs.existsSync(isoPath)) return { ok: false, error: 'ISO file not found.' }
+    if (isUncPath(isoPath)) {
+      const hq = await getHqNetworkStatus()
+      if (hq.hqBlocked) return { ok: false, hqBlocked: true, error: HQ_BLOCKED_MESSAGE }
+    }
+    const q = quotePsLiteral(isoPath)
+    const raw = await runTempPs(`
+$ErrorActionPreference = 'Stop'
+$path = '${q}'
+$img = Mount-DiskImage -ImagePath $path -StorageType ISO -Access ReadOnly -PassThru
+Start-Sleep -Milliseconds 600
+$vol = $img | Get-Volume -ErrorAction SilentlyContinue
+$letter = $null
+foreach ($v in @($vol)) { if ($v.DriveLetter) { $letter = [string]$v.DriveLetter; break } }
+if (-not $letter) {
+  $di = Get-DiskImage -ImagePath $path
+  foreach ($v in @($di | Get-Volume -ErrorAction SilentlyContinue)) {
+    if ($v.DriveLetter) { $letter = [string]$v.DriveLetter; break }
+  }
+}
+if (-not $letter) { throw 'ISO mounted but Windows did not assign a drive letter.' }
+Write-Output ('{"ok":true,"letter":"' + $letter + '"}')
+`)
+    const line = String(raw || '').split('\n').map(l => l.trim()).find(l => l.startsWith('{'))
+    const parsed = line ? JSON.parse(line) : null
+    if (!parsed || !parsed.ok) throw new Error('Mount did not return a drive letter.')
+    const letter = String(parsed.letter).replace(/:$/, '') + ':'
+    mountedIsoByPath.set(path.normalize(isoPath), letter)
+    try { await shell.openPath(letter + '\\') } catch (_) {}
+    return { ok: true, letter }
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).replace(/\u2014/g, '-') }
+  }
+})
+
+ipcMain.handle('iso:dismount', async (_event, { path: isoPath }) => {
+  try {
+    if (!isoPath) return { ok: false, error: 'No ISO selected.' }
+    const q = quotePsLiteral(isoPath)
+    await runTempPs(`
+$ErrorActionPreference = 'SilentlyContinue'
+Dismount-DiskImage -ImagePath '${q}'
+Write-Output '{"ok":true}'
+`)
+    mountedIsoByPath.delete(path.normalize(isoPath))
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).replace(/\u2014/g, '-') }
+  }
+})
+
+ipcMain.handle('iso:status', async (_event, { path: isoPath }) => {
+  if (!isoPath) return { mounted: false }
+  const letter = mountedIsoByPath.get(path.normalize(isoPath))
+  return { mounted: !!letter, letter: letter || null }
+})
+
 // ─── IPC: changelog get ───────────────────────────────────────────────────────
 // Bundled VERSION.json only. ISO share must not host version/changelog files.
 
@@ -1543,18 +1640,52 @@ function parseUpdaterJson(raw) {
   return JSON.parse(jsonLine)
 }
 
+function runUpdaterCollect(scriptPath, args) {
+  return new Promise((resolve, reject) => {
+    const ps = spawnPS(scriptPath, args)
+    let stdout = ''
+    let stderr = ''
+    ps.stdout.on('data', (d) => {
+      const text = d.toString()
+      stdout += text
+      text.split('\n').forEach(line => { if (line.trim()) devLog('STDOUT', line.trimEnd()) })
+    })
+    ps.stderr.on('data', (d) => {
+      const text = d.toString()
+      stderr += text
+      text.split('\n').forEach(line => { if (line.trim()) devLog('STDERR', line.trimEnd()) })
+    })
+    ps.on('close', (code) => {
+      devLog('EXIT', `updater code=${code}`)
+      const hasJson = String(stdout || '').split('\n').some(l => l.trim().startsWith('{'))
+      if (hasJson) return resolve(stdout)
+      if (code !== 0) return reject(new Error(`PS exit ${code}: ${stderr}`))
+      reject(new Error('No JSON object found in updater output'))
+    })
+    ps.on('error', (err) => {
+      devLog('ERROR', `updater spawn error: ${err.message}`)
+      reject(err)
+    })
+  })
+}
+
 async function runPublicUpdater(extraArgs) {
   const args = [
     '-CurrentLauncherVersion', app.getVersion(),
     '-CurrentPayloadVersion', readLocalPayloadVersion(),
     ...extraArgs
   ]
-  const raw = await runPSCollect(UPDATER_PS, args)
+  const raw = await runUpdaterCollect(UPDATER_PS, args)
   return parseUpdaterJson(raw)
 }
 
+function getStableLauncherExe() {
+  const pf = process.env.ProgramFiles || 'C:\\Program Files'
+  return path.join(pf, 'Project LoneWolf Launcher', 'LoneWolf-Launcher.exe')
+}
+
 function schedulePortableExeReplace(tmpExe) {
-  const currentExe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath
+  const currentExe = getStableLauncherExe()
   const pid = process.pid
   const LONEWOLF_DATA_DIR = 'C:\\ProgramData\\LoneWolf'
   const installerLog = path.join(LONEWOLF_DATA_DIR, 'installer.log')
@@ -1587,9 +1718,9 @@ function schedulePortableExeReplace(tmpExe) {
       'echo [%DATE% %TIME%] CMD updater started >> "%LOG%"',
       'ping -n 4 127.0.0.1 > nul',
       'copy /Y "%SRC%" "%DST%"',
-      'if errorlevel 1 (echo [%DATE% %TIME%] ERROR: copy failed >> "%LOG%" & exit /b 1)',
+      'if errorlevel 1 (echo [%DATE% %TIME%] ERROR: copy failed - leaving old exe >> "%LOG%" & start "" "%DST%" & exit /b 1)',
       'start "" "%DST%"',
-      'del "%SRC%" 2>nul',
+      'if /I not "%SRC%"=="%DST%" del "%SRC%" 2>nul',
       'endlocal'
     ]
     fs.writeFileSync(cmdFilePath, cmdLines.join('\r\n'), 'utf8')
@@ -1679,19 +1810,29 @@ ipcMain.handle('update:install', async (event, _params) => {
   try {
     const result = await runPublicUpdater([
       '-Action', 'launcher',
-      '-TargetExe', process.env.PORTABLE_EXECUTABLE_FILE || process.execPath
+      '-TargetExe', getStableLauncherExe()
     ])
-    if (!result || !result.ok) return { ok: false, error: (result && result.error) || 'Launcher update failed' }
+    if (!result || !result.ok) {
+      const error = (result && result.error) || 'Launcher update failed'
+      return { ok: false, error, sacBlocked: looksLikeBlockedDownload(error) }
+    }
     if (result.downloadedPath && result.launcherKind === 'portable') {
-      schedulePortableExeReplace(result.downloadedPath)
-      return { ok: true, kind: 'portable' }
+      const swapSrc = result.stagedNewPath || result.downloadedPath
+      schedulePortableExeReplace(swapSrc)
+      return {
+        ok: true,
+        kind: 'portable',
+        pendingRestart: true,
+        replacedInPlace: !!result.replacedInPlace,
+        message: 'Updating launcher... restarting'
+      }
     }
     if (result.launcherKind === 'setup') {
       return { ok: false, error: 'Launcher Update must not re-run Setup (that removed the desktop shortcut).' }
     }
-    return { ok: false, error: 'No launcher asset downloaded' }
+    return { ok: false, error: 'No launcher asset downloaded', sacBlocked: true }
   } catch (e) {
-    return { ok: false, error: e.message }
+    return { ok: false, error: e.message, sacBlocked: looksLikeBlockedDownload(e.message) }
   }
 })
 

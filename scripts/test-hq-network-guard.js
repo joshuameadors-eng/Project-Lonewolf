@@ -73,6 +73,15 @@ failed += check('random internet 8.8.8.8 host fails', () => {
   assert.strictEqual(r.ok, false)
 })
 
+failed += check('local ISO file does not need HQ; UNC and empty do', () => {
+  const { sourceNeedsHq, isUncPath } = require('../src/launcher/hqNetworkGuard')
+  assert.strictEqual(isUncPath('\\\\server\\share\\a.iso'), true)
+  assert.strictEqual(sourceNeedsHq('C:\\isos\\ubuntu.iso'), false)
+  assert.strictEqual(sourceNeedsHq('\\\\WIN-HQ\\Images\\a.iso'), true)
+  assert.strictEqual(sourceNeedsHq(''), true)
+  assert.strictEqual(sourceNeedsHq(null), true)
+})
+
 failed += check('92.0/22 includes 192.168.93.10 and excludes 192.168.96.1', () => {
   assert.strictEqual(isHqLanHostIpv4('192.168.93.10'), true)
   assert.strictEqual(isHqLanHostIpv4('192.168.95.254'), true)

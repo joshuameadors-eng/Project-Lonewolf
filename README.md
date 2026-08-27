@@ -39,7 +39,16 @@ Public files: [joshuameadors-eng/Project-Lonewolf-Releases](https://github.com/j
 4. It then **downloads the latest portable** `LoneWolf-Launcher.exe` from public `latest.json` / `bin/`, copies it to a **stable path** (`C:\Program Files\Project LoneWolf Launcher\`), and creates a **desktop shortcut** (Run as Administrator) and Start Menu shortcut. That shortcut stays across later launcher/payload updates.
 5. Launch **Project LoneWolf Launcher** from the desktop shortcut.
 
-The Windows package is **unsigned**. **SmartScreen may warn** (“Windows protected your PC”) until the file builds reputation. That is expected. This project does **not** hide, disable, or bypass Microsoft Defender.
+The Windows package is **unsigned**. Install and update **download unsigned programs from GitHub** (`bin/LoneWolf-Launcher.exe` and the unversioned Setup). **Smart App Control** can block those files even if they used to run, because they have no signature and no reputation.
+
+**How to open Setup when Windows blocks it**
+
+1. Check the mode first: **Windows Security → App & browser control → Smart App Control**.
+2. **Evaluation:** you can usually turn Smart App Control **Off**.
+3. **On (enforcement):** Off is often greyed out. Microsoft commonly requires a **PC reset** to turn it off. This project does not promise a one-click Off. If Off is unavailable, use **More info → Run anyway** (or SmartScreen **Run anyway**) only if you trust this installer.
+4. Do **not** disable Windows Defender / Microsoft Defender Antivirus.
+
+Code signing (Azure, about $10/month) is the lasting fix. SmartScreen may still warn until reputation builds; that is expected. This project does **not** hide, disable, or bypass Microsoft Defender.
 
 Optional portable file: `bin/LoneWolf-Launcher.exe` in the public repo (not a Releases asset).
 

@@ -28,10 +28,10 @@ $readme = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'README.md')
 
 # --- Version ---
 $lv = [string]$pkg.version
-if ($lv -eq '5.4.15') { Ok 'package.json version is 5.4.15' } else { Fail "package.json version is $lv (expected 5.4.15)" }
+if ($lv -eq '5.4.18') { Ok 'package.json version is 5.4.18' } else { Fail "package.json version is $lv (expected 5.4.18)" }
 if ($lv -eq [string]$verJson.launcherVersion) { Ok "package.json matches VERSION.json launcherVersion $lv" } else { Fail "package.json $($pkg.version) vs launcherVersion $($verJson.launcherVersion)" }
 $payloadVer = if ($verJson.PSObject.Properties['payloadVersion'] -and $verJson.payloadVersion) { [string]$verJson.payloadVersion } else { [string]$verJson.version }
-if ($payloadVer -eq '5.4.3') { Ok 'payloadVersion is 5.4.3 (script channel independent of launcher 5.4.15)' } else { Fail "payloadVersion unexpectedly $payloadVer" }
+if ($payloadVer -eq '5.4.3') { Ok 'payloadVersion is 5.4.3 (script channel independent of launcher 5.4.18)' } else { Fail "payloadVersion unexpectedly $payloadVer" }
 if ([string]$verJson.version -eq '5.4.3') { Ok 'VERSION.json product version matches payload 5.4.3' } else { Fail "product version unexpectedly $($verJson.version)" }
 
 # --- gitignore / README ---
@@ -41,7 +41,13 @@ if ($readme -match [regex]::Escape($setupLink)) {
     Ok 'private README single installer URL (unversioned Setup on tag installer)'
 } else { Fail 'private README missing stable installer download URL' }
 if ($readme -notmatch 'LoneWolf-Launcher-Setup-v?5\.4') { Ok 'README Setup name is not versioned 5.4.x' } else { Fail 'README still shows a versioned Setup name' }
-if ($readme -match 'SmartScreen') { Ok 'README notes unsigned/SmartScreen' } else { Fail 'README missing SmartScreen note' }
+if ($readme -match 'SmartScreen' -and $readme -match 'Smart App Control' -and $readme -match 'Evaluation' -and $readme -match 'enforcement') {
+    Ok 'README Smart App Control Evaluation vs On (enforcement) and SmartScreen'
+} else { Fail 'README missing Smart App Control how-to (mode honesty)' }
+if ($readme -match 'GitHub' -and $readme -match 'unsigned') { Ok 'README says GitHub unsigned PE is why SAC blocks' } else { Fail 'README missing GitHub unsigned PE explanation' }
+if ($readme -match '(?i)do \*\*not\*\* disable Windows Defender' -or $readme -match 'Do \*\*not\*\* disable Windows Defender') {
+    Ok 'README does not tell users to disable Defender'
+} else { Fail 'README must say not to disable Defender' }
 if ($readme -match '(?i)do \*\*not\*\* package' -or $readme -match '(?i)Do \*\*not\*\* package') {
     Ok 'README does not require packaging to test payload'
 } elseif ($readme -match '(?i)npm start' -and $readme -match '(?i)src/') {
@@ -126,6 +132,33 @@ if ($updSrc -notmatch '-Verb RunAs') { Ok 'updater does not Start-Process -Verb 
 if ($updSrc -notmatch "ArgumentList '/S'") { Ok 'updater does not silently re-run Setup /S' } else { Fail 'updater still launches Setup /S (that deleted the desktop shortcut)' }
 if ($updSrc -match 'Ensure' -or $updSrc -match 'CommonDesktopDirectory') { Ok 'updater can refresh desktop shortcut if missing' } else { Fail 'updater never ensures desktop shortcut' }
 if ($updSrc -notmatch 'Remove-Item[^\n]*\.lnk') { Ok 'updater does not Remove-Item desktop lnk' } else { Fail 'updater deletes .lnk files' }
+if ($updSrc -notmatch '(?m)^\s*exit\s+\d+') { Ok 'updater does not call exit N (avoids Electron PS exit error / killing host)' } else { Fail 'updater still uses exit N which Electron reports as PS exit error' }
+if ($updSrc -match 'LASTEXITCODE = 0') { Ok 'updater clears LASTEXITCODE so success is not process exit 1' } else { Fail 'updater missing LASTEXITCODE clear' }
+if ($updSrc -match 'stagedNewPath' -and $updSrc -match '\.incoming') { Ok 'launcher channel stages .incoming beside Program Files exe' } else { Fail 'updater missing same-directory .incoming staging' }
+if ($updSrc -notmatch 'Join-Path \$env:TEMP \$destName' -and $updSrc -notmatch "Join-Path `$env:TEMP 'LoneWolf-Launcher.exe'") { Ok 'portable download is not %TEMP%\LoneWolf-Launcher.exe' } else { Fail 'updater still downloads portable to TEMP (shortcut/temp cleanup risk)' }
+if ($updSrc -notmatch '(?i)schtasks') { Ok 'updater has no schtasks (Setup must not run at logon)' } else { Fail 'updater must not create scheduled tasks' }
+
+$appJs = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src\renderer\app.js')
+$appCss = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src\renderer\app.css')
+if ($appJs -notmatch 'update-banner' -and $appCss -notmatch '\.update-banner') { Ok 'renderer has no top update-banner' } else { Fail 'top update banner still present' }
+if ($appJs -match 'update-takeover' -and $appJs -match 'Updating launcher') { Ok 'launcher update uses full-screen takeover UI' } else { Fail 'missing full-screen launcher update takeover' }
+if ($appJs -match 'ut-btn-quick' -and $appJs -match 'never replaces LoneWolf-Launcher.exe') { Ok 'Quick Update copy is payload-only in takeover UI' } else { Fail 'Quick Update still mixed with launcher exe replace' }
+
+$mainSrcForUpd = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'main.js')
+if ($mainSrcForUpd -match "'-Action', 'quick'" -and $mainSrcForUpd -match 'update:quick') { Ok 'IPC update:quick destages payload channel only' } else { Fail 'update:quick IPC missing Action quick' }
+if ($mainSrcForUpd -match 'runUpdaterCollect' -and $mainSrcForUpd -match 'hasJson') { Ok 'Electron updater spawn accepts JSON even if process code is non-zero' } else { Fail 'main.js still rejects updater solely on PS exit code' }
+if ($mainSrcForUpd -notmatch '(?i)schtasks') { Ok 'main.js has no schtasks for Setup or updater' } else { Fail 'main.js must not register scheduled tasks' }
+if ($mainSrcForUpd -match 'getStableLauncherExe' -and $mainSrcForUpd -match 'Project LoneWolf Launcher') { Ok 'main.js post-quit swap targets Program Files only' } else { Fail 'main.js still swaps using execPath/TEMP' }
+
+# Success path must be exit code 0 even though the script no longer calls exit 0.
+$resolveExit = 0
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $updater @(
+    '-Action', 'resolve', '-Channel', 'quick',
+    '-CurrentLauncherVersion', '5.4.7', '-CurrentPayloadVersion', '5.4.2',
+    '-FixturePath', $fixture, '-ManifestFixturePath', $manifestFx
+) | Out-Null
+$resolveExit = $LASTEXITCODE
+if ($resolveExit -eq 0) { Ok 'updater resolve success does not exit 1' } else { Fail "updater resolve LASTEXITCODE=$resolveExit (expected 0)" }
 
 $fxLatest = Get-Content -Raw -LiteralPath $manifestFx | ConvertFrom-Json
 if ($fxLatest.launcherVersion -eq '5.4.7' -and $fxLatest.payloadVersion -eq '5.4.2') { Ok 'latest.json fixture is version source (launcher 5.4.7 / payload 5.4.2)' } else { Fail 'latest.json fixture versions unexpected' }
@@ -154,12 +187,29 @@ if ($instSrc -match 'urls\.portable' -and $instSrc -match 'Get-PublicLatest') { 
 if ($instSrc -notmatch 'Start-Process -FilePath \$InnerNsis' -and $instSrc -notmatch 'Inner installer exited') { Ok 'installer does not run inner NSIS' } else { Fail 'installer still launches InnerNsis (NSIS uninstall deleted the shortcut)' }
 if ($instSrc -notmatch 'Remove-Item[^\n]*\.lnk') { Ok 'installer does not Remove-Item desktop lnk' } else { Fail 'installer deletes .lnk files' }
 if ($instSrc -match 'Ensure-LwShortcuts') { Ok 'installer Ensure-LwShortcuts (create if missing, never delete)' } else { Fail 'installer missing Ensure-LwShortcuts' }
-if ($instSrc -match 'LoneWolf Installer') { Ok 'installer UI is LoneWolf Installer' } else { Fail 'installer chrome still says Launcher Setup 5.4.x' }
+if ($instSrc -notmatch "Join-Path \`$env:TEMP 'LoneWolf-Launcher.exe'") { Ok 'installer does not download portable to %TEMP%\LoneWolf-Launcher.exe' } else { Fail 'installer still stages portable in TEMP' }
+if ($instSrc -match "Join-Path \`$InstallDir 'LoneWolf-Launcher.exe.incoming'") { Ok 'installer stages portable in Program Files then replaces' } else { Fail 'installer missing same-dir portable staging' }
+if ($instSrc -notmatch '(?i)schtasks') { Ok 'installer has no schtasks for Setup' } else { Fail 'installer must not register scheduled tasks' }
+if ($instSrc -match 'Ensure-LwShortcuts -ExePath \$exe' -or ($instSrc -match 'Join-Path \$InstallDir' -and $instSrc -match 'Ensure-LwShortcuts')) {
+    Ok 'installer shortcut target is the Program Files exe'
+} else { Fail 'installer shortcut target is not the stable Program Files exe' }
+if ($instSrc -match 'Get-SmartAppControlGuideText' -and $instSrc -match 'Show-InstallErrorUi' -and $instSrc -match 'Evaluation' -and $instSrc -match 'enforcement') {
+    Ok 'installer error page includes SAC Evaluation vs On (enforcement) guide'
+} else { Fail 'installer missing Smart App Control error-page guide' }
+if ($instSrc -match 'Do not disable Windows Defender' -and $instSrc -notmatch ([char]0x2014)) {
+    Ok 'installer SAC guide is ASCII (no em dash) and does not disable Defender'
+} else { Fail 'installer SAC guide has em dash or missing Defender warning' }
 $hostCs = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\LoneWolfSetupHost.cs')
 if ($hostCs -notmatch 'InnerNsis') { Ok 'Setup host does not pass baked InnerNsis' } else { Fail 'Setup host still injects InnerNsis from overlay' }
 if ($hostCs -notmatch 'PortableExe') { Ok 'Setup host does not bake PortableExe overlay' } else { Fail 'Setup host still passes overlay portable exe' }
 $repl = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src\powershell\Install-LauncherUpdate.ps1')
 if ($repl -match 'Ensure-LwUpdateShortcut' -and $repl -notmatch 'Remove-Item[^\n]*\.lnk') { Ok 'in-place launcher replace refreshes shortcut if missing and never deletes lnk' } else { Fail 'Install-LauncherUpdate shortcut persistence missing' }
+if ($repl -notmatch 'Rename-Item -LiteralPath \$TargetExe') { Ok 'post-quit swap never renames the live exe aside first' } else { Fail 'Install-LauncherUpdate still deletes/renames the exe before copy succeeds' }
+if ($repl -match 'leaving the old exe in place') { Ok 'post-quit swap leaves the old exe if replace fails' } else { Fail 'Install-LauncherUpdate missing leave-old-exe-on-failure' }
+if ($repl -notmatch '(?i)schtasks') { Ok 'Install-LauncherUpdate has no schtasks' } else { Fail 'Install-LauncherUpdate must not register scheduled tasks' }
+if ($repl -match 'Project LoneWolf Launcher\\LoneWolf-Launcher.exe' -or $repl -match "Project LoneWolf Launcher' 'LoneWolf-Launcher.exe") {
+    Ok 'post-quit swap target is Program Files LoneWolf-Launcher.exe'
+} else { Fail 'Install-LauncherUpdate must target Program Files only' }
 if ($instSrc -match "Start-Process -FilePath \`$\w+ -ArgumentList \`$(script:quietArgs) -Wait -PassThru" -or $instSrc -match 'ArgumentList \$script:quietArgs -Wait') {
     Ok 'inner .NET installer is started without -Verb RunAs'
 } else {
@@ -233,6 +283,32 @@ if ($mainSrc -match 'raw\.githubusercontent\.com/.+/latest\.json') { Ok 'main.js
 if ($mainSrc -match 'evaluateHqNetwork' -and $mainSrc -match 'update:check' -and $mainSrc -match 'sources:scanShare') {
     Ok 'launcher gates GitHub updates and share ISO scan on HQ network'
 } else { Fail 'main.js missing HQ guard on update:check or sources:scanShare' }
+if ($mainSrc -match 'localMediaIso' -and $mainSrc -match 'sourceNeedsHq' -and $mainSrc -match 'iso:mount') {
+    Ok 'Media Creator local ISO skips HQ; share ISO and iso:mount UNC still gated'
+} else { Fail 'main.js missing local Media Creator HQ exception or iso:mount' }
+
+$isoTest = Join-Path $RepoRoot 'scripts\test-iso-media-kind.js'
+$isoOut = & node.exe $isoTest 2>&1
+$isoExit = $LASTEXITCODE
+if ($isoExit -eq 0) { Ok 'ISO detect helpers: hybrid vs Windows layout (no USB)' }
+else { Fail ("ISO media kind unit tests failed: {0}" -f ($isoOut | Out-String).Trim()) }
+
+$sacTest = Join-Path $RepoRoot 'scripts\test-smart-app-control-guide.js'
+$sacOut = & node.exe $sacTest 2>&1
+$sacExit = $LASTEXITCODE
+if ($sacExit -eq 0) { Ok 'Smart App Control guide copy unit tests' }
+else { Fail ("SAC guide unit tests failed: {0}" -f ($sacOut | Out-String).Trim()) }
+
+$builderSrc2 = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src\renderer\pages\builder.js')
+if ($builderSrc2 -match 'mountIso' -and $builderSrc2 -match 'Mount ISO') {
+    Ok 'Media Creator UI has Mount ISO'
+} else { Fail 'builder.js missing Mount ISO' }
+if ($builderSrc2 -match 'iso-dd') { Ok 'builder progress includes iso-dd raw write phase' } else { Fail 'builder.js missing iso-dd phase' }
+
+$engine = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'provisioner\LoneWolf.Provisioner\Engine\BuildEngine.cs')
+if ($engine -match 'IsoDiskWriter.WriteRawAsync' -and $engine -match 'IsoWriteKind.HybridDd' -and $engine -match 'UsbTargetGuard') {
+    Ok 'provisioner Media Creator: detect + dd + Windows extract + USB guard'
+} else { Fail 'BuildEngine missing universal ISO write paths' }
 
 $guardJs = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src\launcher\hqNetworkGuard.js')
 if ($guardJs -match '192\.168\.92\.0' -and $guardJs -match '192\.168\.94\.1' -and $guardJs -match '(?i)firstbasehq') {

@@ -33,6 +33,8 @@ public sealed class BuildContext
     public string? WpeOcPath { get; init; }
     public bool UseIsoMode { get; init; }
     public bool NoPayload => Profile.NoPayload;
+    public IsoWriteKind IsoWriteKind { get; set; }
+    public string? IsoFilePath { get; set; }
 }
 
 public sealed class BuildEngine
@@ -101,8 +103,39 @@ public sealed class BuildEngine
         {
             if (profile.ProvisionMode == "vendor-iso")
             {
-                isoMount = new IsoMountHelper();
-                ctx.IsoDriveLetter = await isoMount.MountAsync(opts.ResolvedSource.IsoPath!, _emit, 0, ct).ConfigureAwait(false);
+                var isoFile = opts.ResolvedSource.IsoPath
+                    ?? throw new InvalidOperationException("No ISO selected. Pick a local ISO or a share ISO.");
+                ctx.IsoFilePath = isoFile;
+                var header = IsoMediaKind.InspectFile(isoFile);
+                ctx.IsoWriteKind = IsoMediaKind.Plan(header, windowsLayout: false);
+
+                if (ctx.IsoWriteKind != IsoWriteKind.HybridDd)
+                {
+                    try
+                    {
+                        isoMount = new IsoMountHelper();
+                        ctx.IsoDriveLetter = await isoMount.MountAsync(isoFile, _emit, 0, ct).ConfigureAwait(false);
+                        var win = IsoMediaKind.LooksLikeWindowsInstallerLayout(ctx.IsoDriveLetter + "\\");
+                        ctx.IsoWriteKind = IsoMediaKind.Plan(header, win);
+                    }
+                    catch (Exception ex)
+                    {
+                        _emit.Log(0, "iso-mount: Windows did not expose a drive letter (" + SanitizeAscii(ex.Message) + "). Using raw ISO write.");
+                        ctx.IsoWriteKind = IsoWriteKind.RawDd;
+                        isoMount?.Dispose();
+                        isoMount = null;
+                        ctx.IsoDriveLetter = null;
+                    }
+                }
+
+                _emit.Log(0, "media-creator: write mode " + ctx.IsoWriteKind);
+
+                if (ctx.IsoWriteKind is IsoWriteKind.HybridDd or IsoWriteKind.RawDd)
+                {
+                    isoMount?.Dispose();
+                    isoMount = null;
+                    ctx.IsoDriveLetter = null;
+                }
             }
             else if (opts.ResolvedSource.UseIsoMode && opts.ResolvedSource.IsoPath != null)
             {
@@ -214,9 +247,32 @@ public sealed class BuildEngine
 
     private async Task VendorIsoWriteAsync(int diskNumber, BuildContext ctx, CancellationToken ct)
     {
-        // Rufus-style vendor ISO: ESP + NTFS data (install.wim stays whole on NTFS — no SWM
-        // split). ESP must be large enough for boot.wim; a 512 MB ESP silently drops a
-        // 700 MB–1.5 GB WinPE image and the stick fails at boot (0xc000000f).
+        var isoFile = ctx.IsoFilePath
+            ?? throw new InvalidOperationException("No ISO file path for Media Creator.");
+        var isoLen = new FileInfo(isoFile).Length;
+        await UsbTargetGuard.AssertWritableUsbAsync(diskNumber, isoLen, ct).ConfigureAwait(false);
+
+        if (ctx.IsoWriteKind is IsoWriteKind.HybridDd or IsoWriteKind.RawDd)
+        {
+            try
+            {
+                await IsoDiskWriter.WriteRawAsync(isoFile, diskNumber, _emit, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    "Raw ISO write failed. This image may not be a hybrid/dd ISO (for example macOS restore images). " +
+                    SanitizeAscii(ex.Message));
+            }
+            _emit.Phase(diskNumber, "done");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ctx.IsoDriveLetter))
+            throw new InvalidOperationException("Windows installer ISO could not be mounted. Close other mounts and retry.");
+
+        // Windows installer ISO that is not hybrid: ESP + NTFS data (install.wim stays whole
+        // on NTFS, no SWM split). ESP must be large enough for boot.wim.
         var isoRoot = ctx.IsoDriveLetter + "\\";
         var espBytes = VendorIsoEspBytes(isoRoot);
         _emit.Log(diskNumber, $"vendor-iso: ESP size {espBytes / (1024 * 1024)} MB (boot.wim + headroom)");
@@ -1442,6 +1498,11 @@ public sealed class BuildEngine
             return doc.RootElement.TryGetProperty("version", out var v) ? v.GetString() ?? "unknown" : "unknown";
         }
         catch { return "unknown"; }
+    }
+
+    private static string SanitizeAscii(string msg)
+    {
+        return (msg ?? "").Replace('\u2014', '-').Replace('\u2013', '-');
     }
 }
 

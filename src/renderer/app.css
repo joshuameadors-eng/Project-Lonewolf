@@ -1102,56 +1102,49 @@ code {
 .summary-line.partial { border-color: rgba(251,191,36,.3); color: var(--warn); }
 
 /* ================================================================
-   UPDATE BANNER
+   UPDATE TAKEOVER (full-screen; not a top banner)
 ================================================================ */
-.update-banner {
+.update-takeover {
   position: fixed;
-  top: var(--nav-h);
-  left: 0; right: 0;
-  z-index: 500;
-  background: #fbbf24;
-  color: #1c1007;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(1, 3, 8, 0.97);
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: .75rem;
-  padding: .55rem 1.25rem;
-  font-size: .82rem;
-  font-weight: 600;
-  box-shadow: 0 2px 10px rgba(251,191,36,.35);
-  animation: slideDown .28s ease-out forwards;
+  justify-content: center;
+  gap: 1rem;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  font-family: inherit;
 }
-.ub-icon { font-size: .75rem; flex-shrink: 0; opacity: .7; }
-.ub-msg  { flex: 1; }
-.ub-msg strong { font-weight: 800; }
-.ub-btn-update {
-  background: #1c1007;
-  color: #fbbf24;
-  border: none;
-  padding: .3rem .85rem;
-  border-radius: var(--rs);
-  font-size: .78rem;
+.update-takeover .ut-title {
+  margin: 0;
+  color: var(--t1, #e8eef7);
+  font-size: 1.35rem;
   font-weight: 700;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background .18s, opacity .18s;
 }
-.ub-btn-update:hover:not(:disabled) { background: #2d1d0a; }
-.ub-btn-update:disabled { opacity: .55; cursor: not-allowed; }
-.ub-btn-dismiss {
+.update-takeover .ut-sub {
+  margin: 0;
+  color: var(--t2, #9aa8bc);
+  font-size: .92rem;
+  max-width: 28rem;
+  line-height: 1.45;
+}
+.update-takeover .ut-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .65rem;
+  justify-content: center;
+  margin-top: .5rem;
+}
+.update-takeover .ut-actions .btn {
+  min-width: 9.5rem;
+}
+.update-takeover .ut-later {
   background: transparent;
-  border: none;
-  color: #7a5010;
-  font-size: 1.2rem;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 .2rem;
-  flex-shrink: 0;
-  transition: color .15s;
-}
-.ub-btn-dismiss:hover { color: #1c1007; }
-@keyframes slideDown {
-  from { transform: translateY(-100%); opacity: 0; }
-  to   { transform: translateY(0);     opacity: 1; }
+  border: 1px solid var(--card-border, rgba(255,255,255,.18));
+  color: var(--t2, #9aa8bc);
 }
 
 /* ================================================================

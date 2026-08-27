@@ -30,6 +30,16 @@ function isHqLanHostIpv4 (ip) {
   return inPrefix(ip, '192.168.94.0', 24) || inPrefix(ip, '192.168.92.0', 22)
 }
 
+function sourceNeedsHq (sourcePath) {
+  if (sourcePath == null || String(sourcePath).trim() === '') return true
+  return isUncPath(sourcePath)
+}
+
+function isUncPath (p) {
+  const s = String(p || '')
+  return s.startsWith('\\\\') || s.startsWith('//')
+}
+
 function evaluateHqNetwork (snapshot) {
   const snap = snapshot || {}
   const ssid = String(snap.ssid || '').trim()
@@ -60,5 +70,7 @@ module.exports = {
   parseIpv4,
   inPrefix,
   isHqLanHostIpv4,
+  isUncPath,
+  sourceNeedsHq,
   evaluateHqNetwork
 }

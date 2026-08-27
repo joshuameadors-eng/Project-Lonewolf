@@ -17,6 +17,7 @@
     'data-copy':      { label: 'Copying ISO Data…', pct: 60 },
     'wim-presplit':   { label: 'Copying split WIM…', pct: 60 },
     'wim-split':      { label: 'Splitting WIM…',      pct: 60 },
+    'iso-dd':         { label: 'Writing ISO image…', pct: 50 },
     'dism':           { label: 'DISM Apply…',        pct: 60 },
     'winpe-inject':   { label: 'Injecting WinPE…',   pct: 0 },
     'overlay':        { label: 'Overlay Deploy…',    pct: 85 },
@@ -29,7 +30,7 @@
   // as opposed to static phase-based pct. Keep every pct-driven site using this one
   // set so a new streaming phase (e.g. wim-split / wim-presplit) shows up everywhere.
   const LIVE_PROGRESS_PHASES = new Set([
-    'esp-copy', 'data-copy', 'wim-presplit', 'wim-split', 'dism', 'winpe-inject'
+    'esp-copy', 'data-copy', 'iso-dd', 'wim-presplit', 'wim-split', 'dism', 'winpe-inject'
   ])
 
   // Full-pipeline 0–100 bands so overall progress never jumps backward when a
@@ -41,6 +42,7 @@
     'partitioning':   { start: 5,  end: 12 },
     'esp-copy':       { start: 12, end: 28 },
     'data-copy':      { start: 28, end: 55 },
+    'iso-dd':         { start: 12, end: 95 },
     'wim-presplit':   { start: 55, end: 82 },
     'wim-split':      { start: 55, end: 82 },
     'dism':           { start: 55, end: 82 },
@@ -54,7 +56,7 @@
   // Ordinal for stage-strip aggregation (higher = further along).
   const PHASE_ORDER = {
     'waiting': 0, 'starting': 1, 'partitioning': 2,
-    'esp-copy': 3, 'data-copy': 4,
+    'esp-copy': 3, 'data-copy': 4, 'iso-dd': 4,
     'wim-presplit': 5, 'wim-split': 5, 'dism': 5,
     'winpe-inject': 6, 'overlay': 7, 'overlay-update': 7,
     'done': 8, 'failed': 8
@@ -90,7 +92,7 @@
   // Phases that mean a disk has its own pipeline underway — never overwrite
   // these labels with global/disk-0 prep or WinPE status from another stick.
   const DISK_OWNED_PHASES = new Set([
-    'partitioning', 'esp-copy', 'data-copy', 'wim-presplit', 'wim-split', 'dism',
+    'partitioning', 'esp-copy', 'data-copy', 'iso-dd', 'wim-presplit', 'wim-split', 'dism',
     'winpe-inject', 'overlay', 'overlay-update', 'done', 'failed'
   ])
 
@@ -120,6 +122,7 @@
   let sources = []            // unified local + share source list
   let selectedSource = null   // { path, origin, kind, ... }
   let sourceAnalysis = null
+  let isoMountedLetter = null
   let sourceFolder = null     // folder the picker is drilled into (null = top view)
   let sourceScanning = false
   let sweepRunning = false    // full-system ISO sweep still streaming results
@@ -724,6 +727,11 @@
       <div class="source-actions">
         <button class="btn btn-sm btn-out" id="browse-source-btn">Browse…</button>
         <button class="btn btn-sm btn-ghost" id="refresh-sources-btn">Refresh</button>
+        ${selectedSource && String(selectedSource.path || '').toLowerCase().endsWith('.iso')
+          ? (isoMountedLetter
+            ? `<button type="button" class="btn btn-sm btn-out" id="eject-iso-btn-bar">Eject ISO</button>`
+            : `<button type="button" class="btn btn-sm btn-out" id="mount-iso-btn-bar">Mount ISO</button>`)
+          : ''}
         <button type="button" class="btn btn-sm ${showShareSources ? 'btn-out' : 'btn-ghost'}"
           id="toggle-share-sources-btn"
           title="${showShareSources ? 'Hide share ISOs' : 'Show ISOs from the deployment share'}">
@@ -748,6 +756,8 @@
     })
     panel.querySelector('#browse-source-btn')?.addEventListener('click', browseSource)
     panel.querySelector('#refresh-sources-btn')?.addEventListener('click', () => loadSources({ force: true }))
+    panel.querySelector('#mount-iso-btn-bar')?.addEventListener('click', mountSelectedIso)
+    panel.querySelector('#eject-iso-btn-bar')?.addEventListener('click', ejectSelectedIso)
     panel.querySelector('#toggle-share-sources-btn')?.addEventListener('click', () => {
       showShareSources = !showShareSources
       localStorage.setItem('lw_media.showShare', showShareSources ? 'true' : 'false')
@@ -774,13 +784,58 @@
           : '<span class="sb-chip sb-warn">No EFI boot loader</span>')
       : ''
     const mode = sourceAnalysis.buildMode ? `<span class="sb-chip">${escHtml(sourceAnalysis.buildMode)}</span>` : ''
+    const writeMode = sourceAnalysis.writeMode ? `<span class="sb-chip">${escHtml(sourceAnalysis.writeMode)}</span>` : ''
     const arch = sourceAnalysis.arch ? `<span class="sb-chip">${escHtml(sourceAnalysis.arch)}</span>` : ''
     const verify = canDeepVerify(selectedSource)
       ? '<button type="button" class="btn btn-sm btn-ghost" id="verify-source-btn" title="Mount the image and check its EFI boot files">Verify boot files</button>'
       : ''
+    const mountBtn = selectedSource && String(selectedSource.path || '').toLowerCase().endsWith('.iso')
+      ? (isoMountedLetter
+        ? `<button type="button" class="btn btn-sm btn-out" id="eject-iso-btn">Eject ISO (${escHtml(isoMountedLetter)})</button>`
+        : '<button type="button" class="btn btn-sm btn-out" id="mount-iso-btn" title="Mount this ISO in Windows Explorer">Mount ISO</button>')
+      : ''
     const warns = (sourceAnalysis.warnings || []).map(w => `<div class="source-warn">${escHtml(w)}</div>`).join('')
-    el.innerHTML = `<div class="source-chips">${sb}${mode}${arch}${verify}</div>${warns}`
+    el.innerHTML = `<div class="source-chips">${sb}${mode}${writeMode}${arch}${verify}${mountBtn}</div>${warns}`
     el.querySelector('#verify-source-btn')?.addEventListener('click', verifySelectedSource)
+    el.querySelector('#mount-iso-btn')?.addEventListener('click', mountSelectedIso)
+    el.querySelector('#eject-iso-btn')?.addEventListener('click', ejectSelectedIso)
+  }
+
+  async function mountSelectedIso() {
+    const s = selectedSource
+    if (!s) return
+    const btn = document.getElementById('mount-iso-btn')
+    if (btn) { btn.disabled = true; btn.textContent = 'Mounting…' }
+    try {
+      const res = await window.api.mountIso({ path: s.path })
+      if (res && res.hqBlocked) {
+        window.toast(res.error || 'Share ISOs need FirstbaseHQ.', 'error', 8000)
+        return
+      }
+      if (!res || !res.ok) {
+        window.toast((res && res.error) || 'Could not mount ISO', 'error', 8000)
+        return
+      }
+      isoMountedLetter = res.letter
+      window.toast('ISO mounted at ' + res.letter, 'ok')
+    } catch (err) {
+      window.toast('Mount failed: ' + err.message, 'error')
+    } finally {
+      renderSourceAnalysis()
+    }
+  }
+
+  async function ejectSelectedIso() {
+    const s = selectedSource
+    if (!s) return
+    try {
+      await window.api.dismountIso({ path: s.path })
+      isoMountedLetter = null
+      window.toast('ISO ejected', 'ok')
+    } catch (err) {
+      window.toast('Eject failed: ' + err.message, 'error')
+    }
+    renderSourceAnalysis()
   }
 
   async function verifySelectedSource() {
@@ -803,6 +858,7 @@
     if (!s) return
     selectedSource = s
     sourceAnalysis = null
+    isoMountedLetter = null
     renderSourcePanel()
     updateStartButton()
     // Metadata-only check — no mount, no share copy, so this returns instantly.
@@ -1409,9 +1465,13 @@
     }
 
     if (warnEl) {
-      warnEl.innerHTML = hasFullRebuild
-        ? '&#9888;&nbsp; This will <strong>permanently and irreversibly ERASE all data</strong> on the following drive(s). This cannot be undone.'
-        : 'Quick Update &mdash; the existing data partition will be updated in place. No reformatting. No data loss.'
+      if (usesSourcePicker()) {
+        warnEl.innerHTML = 'This will <strong>permanently erase</strong> the USB stick(s) you confirmed below. Hybrid and many Linux ISOs are written as a raw disk image. Windows installer ISOs use a FAT32 + NTFS layout. Confirm the disk number matches the stick in your hand.'
+      } else if (hasFullRebuild) {
+        warnEl.innerHTML = '&#9888;&nbsp; This will <strong>permanently and irreversibly ERASE all data</strong> on the following drive(s). This cannot be undone.'
+      } else {
+        warnEl.innerHTML = 'Quick Update &mdash; the existing data partition will be updated in place. No reformatting. No data loss.'
+      }
     }
 
     diskList.innerHTML = selDisks.map(d => {
@@ -1478,7 +1538,11 @@
         dataVolumeLabel: isWinInstall ? fat32LabelFromBuildDate(stagingBuildDate()) : undefined
       })
       if (started && started.started === false) {
-        window.toast(started.error || 'Build start failed', 'error', 8000)
+        if (started.hqBlocked) {
+          window.toast(started.error || 'Share ISOs need FirstbaseHQ. A local ISO file you picked still works off-site.', 'error', 8000)
+        } else {
+          window.toast(started.error || 'Build start failed', 'error', 8000)
+        }
         setBuilding(false)
         setBuildInProgress(false)
       }
@@ -1928,7 +1992,7 @@
       wfLabel = 'Windows Updates — Snapdragon'
     } else if (wfType === 'MEDIA-CREATOR') {
       wfLabel = 'Media Creator'
-      wfDesc = 'Bootable USB from share-staged or locally selected ISO images'
+      wfDesc = 'Mount any ISO, or write bootable USB from Linux, Windows, or other ISO images you pick locally (share ISOs still need FirstbaseHQ)'
     } else if (wfType === 'BITRASER') {
       wfLabel = 'Bitraser USB'
       wfDesc = 'IT-staged vendor ISO from Remote\\Staging\\Bitraser\\ · No Windows payload'

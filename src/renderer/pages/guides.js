@@ -128,12 +128,19 @@
       id: 'media-creator',
       title: '&#128190; Media Creator',
       content: `
-        <p><strong>Media Creator</strong> builds bootable USB sticks from ISO images you choose
-        or from images staged on the deployment share.</p>
-        <p><strong>Image sources:</strong> The builder lists share-staged ISOs under
-        <code>Remote\\Staging\\ISO\\</code> plus any local ISOs found on this PC. You can also
-        use <strong>Browse</strong> to pick a specific <code>.iso</code> or <code>.wim</code> file.</p>
-        <p>Secure Boot readiness and architecture are shown as chips after you select a source.</p>
+        <p><strong>Media Creator</strong> mounts ISO files and builds bootable USB sticks from
+        Linux, Windows, and other OS images you choose, or from images staged on the deployment share.</p>
+        <p><strong>Mount:</strong> Select an ISO, then click <strong>Mount ISO</strong>. Windows
+        assigns a drive letter via Mount-DiskImage. Use <strong>Eject ISO</strong> when you are done.</p>
+        <p><strong>Bootable USB:</strong> Confirm the listed USB disk, then start. Hybrid ISOs
+        (ISO 9660 plus MBR/GPT at the start, typical of many Linux images) are written as a raw
+        disk image. Windows installer ISOs with <code>sources\\install.wim</code> or
+        <code>install.esd</code> use a FAT32 EFI partition plus NTFS data (files larger than 4 GB).
+        Other ISOs try raw write; if that fails you get a clear error.</p>
+        <p><strong>Local vs share:</strong> A local ISO file you pick works even when you are not on
+        FirstbaseHQ. Listing or copying ISOs from the deployment share still requires FirstbaseHQ.</p>
+        <p><strong>Not supported:</strong> Apple macOS restore / .dmg-style images, and some
+        vendor utilities that need a custom tool (not Ventoy). Those will not boot from this writer.</p>
       `
     },
     {
@@ -156,6 +163,11 @@
         <p>This workflow is separate from <strong>Media Creator</strong>, which lets you pick
         local or share ISOs for general bootable media.</p>
       `
+    },
+    {
+      id: 'smart-app-control',
+      title: '&#128737; Smart App Control / unsigned Setup',
+      content: `<div id="guides-sac-body"></div>`
     },
     {
       id: 'faq',
@@ -248,6 +260,11 @@
         if (window.__navigateTo) window.__navigateTo('#home')
         setTimeout(() => { if (window.__tutorial) window.__tutorial.start() }, 400)
       })
+    }
+
+    const sac = page.querySelector('#guides-sac-body')
+    if (sac && window.LoneWolfSmartAppControlGuide) {
+      sac.innerHTML = window.LoneWolfSmartAppControlGuide.HTML
     }
   }
 

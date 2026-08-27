@@ -27,26 +27,58 @@ public sealed class IsoMountHelper : IDisposable
         }
 
         _mountedIsoPath = localPath;
-
-        var psi = new ProcessStartInfo
+        var escaped = localPath.Replace("'", "''");
+        var scriptPath = Path.Combine(Path.GetTempPath(), "lw-iso-mount-" + Guid.NewGuid().ToString("N") + ".ps1");
+        var script = $@"
+$ErrorActionPreference = 'Stop'
+$path = '{escaped}'
+$img = Mount-DiskImage -ImagePath $path -StorageType ISO -Access ReadOnly -PassThru -ErrorAction Stop
+Start-Sleep -Milliseconds 600
+function Get-LwIsoLetter($image) {{
+  $vol = $image | Get-Volume -ErrorAction SilentlyContinue
+  foreach ($v in @($vol)) {{ if ($v.DriveLetter) {{ return [string]$v.DriveLetter }} }}
+  $di = Get-DiskImage -ImagePath $path -ErrorAction SilentlyContinue
+  if ($di) {{
+    $vols = $di | Get-Volume -ErrorAction SilentlyContinue
+    foreach ($v in @($vols)) {{ if ($v.DriveLetter) {{ return [string]$v.DriveLetter }} }}
+  }}
+  return $null
+}}
+$letter = Get-LwIsoLetter $img
+if (-not $letter) {{
+  Start-Sleep -Milliseconds 1200
+  $letter = Get-LwIsoLetter $img
+}}
+if (-not $letter) {{
+  throw 'ISO mounted but Windows did not assign a drive letter.'
+}}
+Write-Output $letter
+";
+        await File.WriteAllTextAsync(scriptPath, script, ct).ConfigureAwait(false);
+        try
         {
-            FileName = "powershell.exe",
-            Arguments = $"-NoProfile -Command \"(Mount-DiskImage -ImagePath '{localPath.Replace("'", "''")}' -PassThru | Get-Volume).DriveLetter\"",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        };
+            var result = await ProcessRunner.RunAsync(
+                "powershell.exe",
+                $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+                ct).ConfigureAwait(false);
+            var output = (result.Output ?? "").Trim();
+            string? letter = null;
+            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var t = line.Trim().TrimEnd(':');
+                if (t.Length == 1 && char.IsLetter(t[0])) letter = t;
+            }
+            if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(letter))
+                throw new InvalidOperationException($"Failed to mount ISO: {(string.IsNullOrWhiteSpace(output) ? isoPath : output)}");
 
-        using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start PowerShell for ISO mount");
-        var output = await proc.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
-        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
-
-        if (proc.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
-            throw new InvalidOperationException($"Failed to mount ISO: {isoPath}");
-
-        _driveLetter = output.Trim() + ":";
-        emitter.Log(logDisk, $"ISO mounted at {_driveLetter}");
-        return _driveLetter;
+            _driveLetter = letter.Trim().TrimEnd(':') + ":";
+            emitter.Log(logDisk, $"ISO mounted at {_driveLetter}");
+            return _driveLetter;
+        }
+        finally
+        {
+            try { File.Delete(scriptPath); } catch { /* ignore */ }
+        }
     }
 
     public void Dispose()

@@ -264,6 +264,95 @@ function Write-LwJson {
     $Obj | ConvertTo-Json -Compress -Depth 8
 }
 
+function Get-LwStableLauncherExe {
+    return (Join-Path ${env:ProgramFiles} 'Project LoneWolf Launcher\LoneWolf-Launcher.exe')
+}
+
+function Test-LwUnstableLauncherPath {
+    param([string]$Path)
+    if (-not $Path) { return $true }
+    $p = [string]$Path
+    if ($p -match '(?i)\\Temp\\') { return $true }
+    if ($p -match '(?i)\\Downloads\\') { return $true }
+    if ($p -match '(?i)LoneWolf-Launcher-Setup\.exe$') { return $true }
+    if ($p -match '(?i)\.(new|incoming)$') { return $true }
+    return $false
+}
+
+function Ensure-LwShortcutIfMissing {
+    param([string]$LnkPath, [string]$ExePath)
+    if (-not $ExePath -or -not (Test-Path -LiteralPath $ExePath)) { return }
+    if (Test-LwUnstableLauncherPath -Path $ExePath) { return }
+    $needsWrite = $true
+    if (Test-Path -LiteralPath $LnkPath) {
+        try {
+            $w0 = New-Object -ComObject WScript.Shell
+            $cur = [string]($w0.CreateShortcut($LnkPath).TargetPath)
+            if ($cur -eq $ExePath) { return }
+            if (-not (Test-LwUnstableLauncherPath -Path $cur)) { return }
+        } catch {
+            return
+        }
+        $needsWrite = $true
+    }
+    if (-not $needsWrite) { return }
+    $dir = Split-Path $LnkPath
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $w = New-Object -ComObject WScript.Shell
+    $s = $w.CreateShortcut($LnkPath)
+    $s.TargetPath = $ExePath
+    $s.WorkingDirectory = Split-Path $ExePath
+    $s.WindowStyle = 1
+    $s.Description = 'Project LoneWolf Launcher'
+    $s.Save()
+    if (Test-Path -LiteralPath $LnkPath) {
+        $bytes = [System.IO.File]::ReadAllBytes($LnkPath)
+        if ($bytes.Length -gt 0x15) {
+            $bytes[0x15] = $bytes[0x15] -bor 0x20
+            [System.IO.File]::WriteAllBytes($LnkPath, $bytes)
+        }
+    }
+}
+
+function Copy-LwPortableBesideRunning {
+    param([string]$SourceExe, [string]$TargetExe)
+    $out = [ordered]@{
+        replacedInPlace = $false
+        pendingRestart  = $false
+        stagedNewPath   = $null
+        copyError       = $null
+    }
+    if (-not $TargetExe -or -not (Test-Path -LiteralPath $SourceExe)) { return [pscustomobject]$out }
+    if ($TargetExe -match 'electron\.exe$' -or $TargetExe -match 'node\.exe$') { return [pscustomobject]$out }
+    $targetDir = Split-Path $TargetExe
+    if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) {
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    }
+    $staged = "$TargetExe.incoming"
+    if ([string]$SourceExe -ne [string]$staged) {
+        try {
+            Copy-Item -LiteralPath $SourceExe -Destination $staged -Force -ErrorAction Stop
+        } catch {
+            $out.copyError = $_.Exception.Message
+            $out.pendingRestart = $true
+            return [pscustomobject]$out
+        }
+    }
+    $out.stagedNewPath = $staged
+    try {
+        Copy-Item -LiteralPath $staged -Destination $TargetExe -Force -ErrorAction Stop
+        $out.replacedInPlace = $true
+        $out.pendingRestart = $true
+        return [pscustomobject]$out
+    } catch {
+        $out.copyError = $_.Exception.Message
+        $out.pendingRestart = $true
+        return [pscustomobject]$out
+    }
+}
+
 function Invoke-HttpDownload {
     param([string]$Url, [string]$Dest)
     $headers = @{ 'User-Agent' = 'LoneWolf-Launcher-Updater' }
@@ -289,6 +378,8 @@ function Install-QuickPayload {
             ForEach-Object { throw "Refusing quick update: zip contains launcher exe $($_.Name)" }
         Get-ChildItem -LiteralPath $stage -Recurse -File -Filter '*.lnk' -ErrorAction SilentlyContinue |
             ForEach-Object { throw "Refusing quick update: zip contains shortcut $($_.Name)" }
+        Get-ChildItem -LiteralPath $stage -Recurse -File -Filter 'LoneWolf-Launcher-Setup.exe' -ErrorAction SilentlyContinue |
+            ForEach-Object { throw "Refusing quick update: zip contains Setup $($_.Name)" }
         if (Test-Path -LiteralPath $payloadSrc) {
             $payloadDst = Join-Path $DestRoot 'payload'
             if (-not (Test-Path -LiteralPath $payloadDst)) { New-Item -ItemType Directory -Path $payloadDst -Force | Out-Null }
@@ -329,14 +420,13 @@ $result = [ordered]@{
     publicRepo                 = "https://github.com/$($cfg.owner)/$($cfg.repo)"
 }
 
-try {
+function Invoke-LwUpdaterCore {
     if ($DevLocal -and $Action -in @('quick', 'check', 'resolve')) {
         $result.mode = 'dev-local'
         $result.skippedDownload = $true
         $result.message = 'Dev checkout: Quick Update destages from local src/. GitHub payload pull is for packaged installs only.'
         if ($LocalSrcRoot) { $result.localSrcRoot = $LocalSrcRoot }
-        Write-LwJson $result
-        exit 0
+        return [pscustomobject]$result
     }
 
     $release = $null
@@ -353,8 +443,7 @@ try {
         $result.error = $releaseFetchError
         $result.skippedDownload = $true
         $result.message = 'No public source latest.json yet (or GitHub unreachable).'
-        Write-LwJson $result
-        exit 0
+        return [pscustomobject]$result
     }
     $result.latestLauncherVersion = if ($manifest.launcherVersion) { [string]$manifest.launcherVersion } else { $null }
     $result.latestPayloadVersion  = if ($manifest.payloadVersion) { [string]$manifest.payloadVersion } else { $null }
@@ -379,70 +468,68 @@ try {
         $result.payloadUpdateAvailable = $false
     }
 
-    # Backward-compat flag is LAUNCHER only — never force an exe replace for scripts.
+    # Backward-compat flag is LAUNCHER only -- never force an exe replace for scripts.
     $result.updateAvailable = [bool]$result.launcherUpdateAvailable
 
     if ($Action -in @('check', 'resolve') -or $DryRun) {
-        Write-LwJson $result
-        exit 0
+        return [pscustomobject]$result
     }
 
     if ($Action -eq 'quick') {
         if (-not $result.quickUrl) { throw 'No payload URL in public source latest.json' }
         if (-not $ResourcesRoot) { throw 'ResourcesRoot is required for packaged quick update' }
-        if ($DryRun) { Write-LwJson $result; exit 0 }
         $zip = Join-Path $env:TEMP 'FirstBase-payload.zip'
         Invoke-HttpDownload -Url $result.quickUrl -Dest $zip
         Install-QuickPayload -ZipPath $zip -DestRoot $ResourcesRoot
         Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
         $result.applied = 'quick'
-        Write-LwJson $result
-        exit 0
+        return [pscustomobject]$result
     }
 
     if ($Action -eq 'launcher') {
         if (-not $result.portableUrl) { throw 'No portable exe URL in public source latest.json' }
-        $destName = 'LoneWolf-Launcher.exe'
-        $dest = Join-Path $env:TEMP $destName
+        $stable = Get-LwStableLauncherExe
+        $targetDir = Split-Path $stable
+        if (-not (Test-Path -LiteralPath $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        }
+        $dest = "$stable.incoming"
         Invoke-HttpDownload -Url $result.portableUrl -Dest $dest
         $result.downloadedPath = $dest
         $result.launcherKind = 'portable'
         $result.applied = 'launcher'
-        $exeForShortcut = $TargetExe
-        if (-not $exeForShortcut) {
-            $stable = Join-Path ${env:ProgramFiles} 'Project LoneWolf Launcher\LoneWolf-Launcher.exe'
-            if (Test-Path -LiteralPath $stable) { $exeForShortcut = $stable }
+        $exeForShortcut = $stable
+        $result.targetExe = $exeForShortcut
+        $copy = Copy-LwPortableBesideRunning -SourceExe $dest -TargetExe $exeForShortcut
+        $result.replacedInPlace = [bool]$copy.replacedInPlace
+        $result.pendingRestart = $true
+        $result.stagedNewPath = $copy.stagedNewPath
+        if ($copy.copyError -and -not $copy.replacedInPlace) {
+            $result.message = 'Launcher exe is in use. Swap is scheduled after a clean restart. The installed exe was left in place.'
         }
-        if ($exeForShortcut -and (Test-Path -LiteralPath $exeForShortcut)) {
+        try {
             $desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Project LoneWolf Launcher.lnk'
             $sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\Project LoneWolf Launcher.lnk'
-            $smDir = Split-Path $sm
-            if (-not (Test-Path -LiteralPath $smDir)) { New-Item -ItemType Directory -Path $smDir -Force | Out-Null }
-            $w = New-Object -ComObject WScript.Shell
-            foreach ($lnk in @($desk, $sm)) {
-                if (-not (Test-Path -LiteralPath $lnk)) {
-                    $s = $w.CreateShortcut($lnk)
-                    $s.TargetPath = $exeForShortcut
-                    $s.WorkingDirectory = Split-Path $exeForShortcut
-                    $s.WindowStyle = 1
-                    $s.Description = 'Project LoneWolf Launcher'
-                    $s.Save()
-                    if (Test-Path -LiteralPath $lnk) {
-                        $bytes = [System.IO.File]::ReadAllBytes($lnk)
-                        if ($bytes.Length -gt 0x15) {
-                            $bytes[0x15] = $bytes[0x15] -bor 0x20
-                            [System.IO.File]::WriteAllBytes($lnk, $bytes)
-                        }
-                    }
-                }
-            }
+            Ensure-LwShortcutIfMissing -LnkPath $desk -ExePath $exeForShortcut
+            Ensure-LwShortcutIfMissing -LnkPath $sm -ExePath $exeForShortcut
+        } catch {
+            $result.shortcutWarning = $_.Exception.Message
         }
-        Write-LwJson $result
-        exit 0
+        return [pscustomobject]$result
     }
+
+    return [pscustomobject]$result
+}
+
+$final = $null
+try {
+    $final = Invoke-LwUpdaterCore
 } catch {
     $result.ok = $false
     $result.error = $_.Exception.Message
-    Write-LwJson $result
-    exit 1
+    $final = [pscustomobject]$result
 }
+Write-LwJson $final
+# Do not call exit / SetShouldExit. Those kill a hosted PowerShell session and Electron
+# reports "PS exit N" even after JSON was written. -File then uses leftover LASTEXITCODE.
+$global:LASTEXITCODE = 0

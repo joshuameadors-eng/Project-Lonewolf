@@ -11,6 +11,8 @@ public sealed class SourceAnalysis
     public string Origin { get; set; } = "local";
     public List<string> Warnings { get; set; } = new();
     public List<string> CompatibleProfiles { get; set; } = new();
+    /// <summary>hybrid-dd | windows-extract | raw-dd</summary>
+    public string? WriteMode { get; set; }
 }
 
 public static class SourceAnalyzer
@@ -36,6 +38,8 @@ public static class SourceAnalyzer
         {
             analysis.BuildMode = "iso";
             analysis.Arch = LocalIsoScanner.InferArch(Path.GetFileName(path));
+            var header = IsoMediaKind.InspectFile(path);
+            analysis.WriteMode = MapWriteMode(IsoMediaKind.Plan(header, windowsLayout: false));
             var wf = LocalIsoScanner.InferWorkflow(Path.GetFileName(path));
             if (wf is "bitraser" or "destruction")
             {
@@ -44,8 +48,7 @@ public static class SourceAnalyzer
             }
             else
             {
-                AnalyzeIsoContents(path, analysis);
-                AddWindowsProfiles(analysis);
+                AnalyzeIsoContents(path, analysis, header);
             }
             return analysis;
         }
@@ -64,23 +67,59 @@ public static class SourceAnalyzer
         return analysis;
     }
 
-    private static void AnalyzeIsoContents(string isoPath, SourceAnalysis analysis)
+    private static void AnalyzeIsoContents(string isoPath, SourceAnalysis analysis, IsoHeaderInfo header)
     {
         IsoMountHelper? mount = null;
         try
         {
             mount = new IsoMountHelper();
             var letter = mount.MountAsync(isoPath).GetAwaiter().GetResult();
-            AnalyzeFolderContents(letter + "\\", analysis);
+            var root = letter + "\\";
+            var windows = IsoMediaKind.LooksLikeWindowsInstallerLayout(root);
+            analysis.WriteMode = MapWriteMode(IsoMediaKind.Plan(header, windows));
+            if (windows)
+            {
+                AddWindowsProfiles(analysis);
+                AnalyzeFolderContents(root, analysis);
+            }
+            else
+            {
+                analysis.CompatibleProfiles.Add("MEDIA-CREATOR");
+                if (header.Hybrid)
+                    analysis.Warnings.Add("Hybrid ISO: Media Creator will write the image to the USB (dd-style).");
+                else
+                    analysis.Warnings.Add("Not a Windows installer ISO. Media Creator will try a raw image write. macOS restore images are not supported.");
+                AnalyzeGenericEfi(root, analysis);
+            }
         }
         catch (Exception ex)
         {
-            analysis.Warnings.Add($"Could not mount ISO for analysis: {ex.Message}");
+            analysis.WriteMode = MapWriteMode(IsoMediaKind.Plan(header, false));
+            analysis.CompatibleProfiles.Add("MEDIA-CREATOR");
+            analysis.Warnings.Add("Could not mount ISO for analysis: " + ex.Message.Replace('\u2014', '-'));
+            if (header.Hybrid)
+                analysis.Warnings.Add("Header looks hybrid; bootable USB can still use raw write without mounting.");
         }
         finally
         {
             mount?.Dispose();
         }
+    }
+
+    private static string MapWriteMode(IsoWriteKind kind) => kind switch
+    {
+        IsoWriteKind.WindowsExtract => "windows-extract",
+        IsoWriteKind.HybridDd => "hybrid-dd",
+        _ => "raw-dd"
+    };
+
+    private static void AnalyzeGenericEfi(string root, SourceAnalysis analysis)
+    {
+        var bootx64 = Path.Combine(root, "efi", "boot", "bootx64.efi");
+        var bootia32 = Path.Combine(root, "efi", "boot", "bootia32.efi");
+        analysis.SecureBootReady = File.Exists(bootx64) || File.Exists(bootia32);
+        if (!analysis.SecureBootReady)
+            analysis.Warnings.Add("No EFI\\boot loader visible after mount. Hybrid/raw write may still boot if the ISO carries its own MBR/GPT.");
     }
 
     private static void AnalyzeFolderContents(string root, SourceAnalysis analysis)
@@ -90,7 +129,7 @@ public static class SourceAnalyzer
         var bootx64 = Path.Combine(root, "efi", "boot", "bootx64.efi");
 
         if (!File.Exists(bootWim))
-            analysis.Warnings.Add("sources\\boot.wim not found — WinPE boot may fail");
+            analysis.Warnings.Add("sources\\boot.wim not found - WinPE boot may fail");
 
         if (File.Exists(bootmgfw))
             analysis.SecureBootReady = true;

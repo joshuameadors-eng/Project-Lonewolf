@@ -229,6 +229,39 @@ window.toast = function toast(message, type = 'info', duration = 4500) {
   }, duration)
 }
 
+window.showSmartAppControlGuide = function showSmartAppControlGuide(errorText) {
+  const g = window.LoneWolfSmartAppControlGuide
+  document.getElementById('sac-guide-overlay')?.remove()
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay open'
+  overlay.id = 'sac-guide-overlay'
+  const body = g ? g.HTML : '<p>Windows Security, App and browser control, Smart App Control.</p>'
+  const title = g ? g.TITLE : 'Unsigned download blocked'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:560px;text-align:left">
+      <h3>${title}</h3>
+      ${errorText ? `<p class="modal-warn">${String(errorText).replace(/</g, '&lt;')}</p>` : ''}
+      <div class="ac-content">${body}</div>
+      <div class="modal-actions">
+        <button class="btn btn-pri" id="sac-guide-ok">OK</button>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+  const close = () => { overlay.remove() }
+  overlay.querySelector('#sac-guide-ok').addEventListener('click', close)
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close() })
+}
+
+function maybeShowSacGuide(res, fallback) {
+  const err = (res && (res.error || res.message)) || fallback || 'Download failed'
+  const g = window.LoneWolfSmartAppControlGuide
+  if ((res && res.sacBlocked) || (g && g.looksLikeBlockedDownload(err))) {
+    window.showSmartAppControlGuide(err)
+    return true
+  }
+  return false
+}
+
 // ─── Page modules namespace ───────────────────────────────────────────────────
 window.__pages = {}
 
@@ -1105,15 +1138,24 @@ const settingsModal = (() => {
     el.querySelector('#settings-launcher-update').addEventListener('click', async () => {
       const btn = el.querySelector('#settings-launcher-update')
       btn.disabled = true
+      close()
+      showLauncherUpdatingTakeover()
       try {
         const res = await window.api.installUpdate({})
         if (res && res.reason === 'dev-mode') {
+          hideUpdateTakeover()
           window.toast('Launcher Update skipped — npm start / destage uses this checkout, not a new exe.', 'info')
         } else if (!res || !res.ok) {
-          window.toast((res && res.error) ? res.error : 'Launcher Update failed', 'error')
+          hideUpdateTakeover()
+          if (!maybeShowSacGuide(res, 'Launcher Update failed')) {
+            window.toast((res && res.error) ? res.error : 'Launcher Update failed', 'error')
+          }
         }
       } catch (e) {
-        window.toast(e.message, 'error')
+        hideUpdateTakeover()
+        if (!maybeShowSacGuide({ error: e.message }, e.message)) {
+          window.toast(e.message, 'error')
+        }
       } finally {
         btn.disabled = false
       }
@@ -1213,38 +1255,64 @@ const settingsModal = (() => {
 })()
 window.__settingsModal = settingsModal
 
-// ─── Update banner ────────────────────────────────────────────────────────────
-let updateBannerDismissed = false
+// ─── Full-screen update takeover (replaces the old top banner) ───────────────
+let updateOfferDismissed = false
 let pendingUpdateInfo = null
 
-function showUpdateBanner(result) {
-  const existing = document.getElementById('update-banner')
+function hideUpdateTakeover() {
+  const existing = document.getElementById('update-takeover')
   if (existing) existing.remove()
+}
 
+function ensureUpdateTakeover() {
+  hideUpdateTakeover()
+  const overlay = document.createElement('div')
+  overlay.id = 'update-takeover'
+  overlay.className = 'update-takeover'
+  document.body.appendChild(overlay)
+  return overlay
+}
+
+function showLauncherUpdatingTakeover() {
+  const overlay = ensureUpdateTakeover()
+  overlay.innerHTML = `
+    <div class="spin" style="width:28px;height:28px;border-width:3px"></div>
+    <p class="ut-title">Updating launcher\u2026 restarting</p>
+    <p class="ut-sub">Replacing LoneWolf-Launcher.exe in place. Setup is not re-run. Shortcuts are kept.</p>
+    <div class="loading-bar" style="width:220px;margin-top:.25rem"></div>
+  `
+}
+
+function showUpdateTakeover(result) {
   const launcher = !!(result && result.launcherUpdateAvailable)
   const payload = !!(result && result.payloadUpdateAvailable)
   if (!launcher && !payload) return
 
-  const banner = document.createElement('div')
-  banner.id = 'update-banner'
-  banner.className = 'update-banner'
+  const overlay = ensureUpdateTakeover()
+  const fromL = _cachedAppVersion || result.currentVersion || '?'
+  const toL = result.latestLauncherVersion || result.latestVersion || '?'
+  const fromP = result.currentPayloadVersion || '?'
+  const toP = result.latestPayloadVersion || '?'
+
+  const title = launcher ? 'Launcher update available' : 'Payload update available'
   const bits = []
   if (launcher) {
-    bits.push('Launcher <strong>v' + (_cachedAppVersion || result.currentVersion || '?') + '</strong> &#8594; <strong>v' + (result.latestLauncherVersion || result.latestVersion || '?') + '</strong>')
+    bits.push('Launcher <strong>v' + fromL + '</strong> \u2192 <strong>v' + toL + '</strong>. This replaces the portable exe at the install path. It is not Quick Update.')
   }
   if (payload) {
-    bits.push('Payload/scripts <strong>v' + (result.currentPayloadVersion || '?') + '</strong> &#8594; <strong>v' + (result.latestPayloadVersion || '?') + '</strong> (Quick Update, no new exe)')
+    bits.push('Payload/scripts <strong>v' + fromP + '</strong> \u2192 <strong>v' + toP + '</strong>. Quick Update copies scripts only and never replaces LoneWolf-Launcher.exe.')
   }
-  banner.innerHTML =
-    '<span class="ub-icon">&#9632;</span>' +
-    '<span class="ub-msg">' + bits.join(' &middot; ') + '</span>' +
-    (payload ? '<button class="ub-btn-quick btn" type="button">Quick Update</button>' : '') +
-    (launcher ? '<button class="ub-btn-update btn" type="button">Launcher Update</button>' : '') +
-    '<button class="ub-btn-dismiss" title="Dismiss">&#215;</button>'
 
-  document.body.appendChild(banner)
+  overlay.innerHTML =
+    '<p class="ut-title">' + title + '</p>' +
+    '<p class="ut-sub">' + bits.join('</p><p class="ut-sub">') + '</p>' +
+    '<div class="ut-actions">' +
+      (launcher ? '<button class="btn ut-btn-launcher" type="button">Launcher Update</button>' : '') +
+      (payload ? '<button class="btn ut-btn-quick" type="button">Quick Update</button>' : '') +
+      '<button class="btn ut-later" type="button">Later</button>' +
+    '</div>'
 
-  const quickBtn = banner.querySelector('.ub-btn-quick')
+  const quickBtn = overlay.querySelector('.ut-btn-quick')
   if (quickBtn) {
     quickBtn.addEventListener('click', async () => {
       quickBtn.disabled = true
@@ -1252,8 +1320,11 @@ function showUpdateBanner(result) {
       try {
         const res = await window.api.applyQuickUpdate()
         if (res && res.ok) {
-          window.toast('Quick Update applied. The launcher exe was not replaced.', 'ok')
-          banner.remove()
+          window.toast('Quick Update applied (scripts/payload only). The launcher exe was not replaced.', 'ok')
+          if (!launcher) hideUpdateTakeover()
+          else {
+            quickBtn.remove()
+          }
         } else {
           window.toast((res && (res.error || res.message)) || 'Quick Update failed', 'error')
           quickBtn.disabled = false
@@ -1267,34 +1338,34 @@ function showUpdateBanner(result) {
     })
   }
 
-  const launchBtn = banner.querySelector('.ub-btn-update')
+  const launchBtn = overlay.querySelector('.ut-btn-launcher')
   if (launchBtn) {
     launchBtn.addEventListener('click', async () => {
-      launchBtn.disabled = true
-      launchBtn.textContent = 'Updating\u2026'
+      showLauncherUpdatingTakeover()
       try {
         const res = await window.api.installUpdate({})
         if (!res || !res.ok) {
+          hideUpdateTakeover()
           if (res && res.reason === 'dev-mode') {
             window.toast('Launcher Update skipped — destage from src/ in this checkout.', 'info')
           } else {
-            window.toast((res && res.error) ? res.error : 'Unknown error', 'error')
+            if (!maybeShowSacGuide(res, 'Unknown error')) {
+              window.toast((res && res.error) ? res.error : 'Unknown error', 'error')
+            }
           }
-          launchBtn.disabled = false
-          launchBtn.textContent = 'Launcher Update'
-          return
         }
       } catch (e) {
-        window.toast('Update failed: ' + e.message, 'error')
-        launchBtn.disabled = false
-        launchBtn.textContent = 'Launcher Update'
+        hideUpdateTakeover()
+        if (!maybeShowSacGuide({ error: e.message }, e.message)) {
+          window.toast('Update failed: ' + e.message, 'error')
+        }
       }
     })
   }
 
-  banner.querySelector('.ub-btn-dismiss').addEventListener('click', () => {
-    banner.remove()
-    updateBannerDismissed = true
+  overlay.querySelector('.ut-later').addEventListener('click', () => {
+    hideUpdateTakeover()
+    updateOfferDismissed = true
   })
 }
 
@@ -1310,30 +1381,21 @@ async function checkForUpdate() {
   try {
     const result = await window.api.checkForUpdate()
     if (toastHqBlocked(result)) return
-    if (result && (result.launcherUpdateAvailable || result.payloadUpdateAvailable) && !updateBannerDismissed) {
+    if (result && (result.launcherUpdateAvailable || result.payloadUpdateAvailable) && !updateOfferDismissed) {
       pendingUpdateInfo = result
-      showUpdateBanner(result)
+      showUpdateTakeover(result)
     }
   } catch (_) {}
 }
 
 // ─── Startup blocking update check ───────────────────────────────────────────
 async function runStartupUpdateCheck() {
-  const overlay = document.createElement('div')
-  overlay.id = 'startup-check-overlay'
-  overlay.style.cssText = [
-    'position:fixed', 'inset:0', 'z-index:99999',
-    'background:rgba(1,3,8,.97)',
-    'display:flex', 'flex-direction:column',
-    'align-items:center', 'justify-content:center',
-    'gap:1rem', 'font-family:inherit'
-  ].join(';')
+  const overlay = ensureUpdateTakeover()
   overlay.innerHTML = `
     <div class="spin" style="width:28px;height:28px;border-width:3px"></div>
-    <p style="color:var(--t2);font-size:.9rem;margin:0">Checking for updates...</p>
+    <p class="ut-title">Checking for updates\u2026</p>
     <div class="loading-bar" style="width:220px;margin-top:.25rem"></div>
   `
-  document.body.appendChild(overlay)
 
   let result = null
   try {
@@ -1343,13 +1405,11 @@ async function runStartupUpdateCheck() {
     ])
   } catch (_) {}
 
-  overlay.remove()
+  hideUpdateTakeover()
   if (toastHqBlocked(result)) return
-  // Never block the app for payload/script updates. Launcher updates are offered
-  // on the banner — they are not applied as a side effect of Quick Update.
-  if (result && (result.launcherUpdateAvailable || result.payloadUpdateAvailable) && !updateBannerDismissed) {
+  if (result && (result.launcherUpdateAvailable || result.payloadUpdateAvailable) && !updateOfferDismissed) {
     pendingUpdateInfo = result
-    showUpdateBanner(result)
+    showUpdateTakeover(result)
   }
 }
 
