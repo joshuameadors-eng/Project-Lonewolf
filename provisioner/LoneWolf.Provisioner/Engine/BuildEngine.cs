@@ -521,6 +521,23 @@ public sealed class BuildEngine
                 _emit.Log(diskNumber, $"WIN-INSTALL: copied {deployFile} to FirstBase\\Deploy\\{deployFile}");
             }
 
+            var peFontDstDir = Path.Combine(deployDir, "Fonts");
+            Directory.CreateDirectory(peFontDstDir);
+            var peFontDst = Path.Combine(peFontDstDir, "cascadiamono.ttf");
+            var peFontCandidates = new[]
+            {
+                Path.Combine(ctx.ContentRoot, "Deploy", "Fonts", "cascadiamono.ttf"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Fonts", "cascadiamono.ttf"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Fonts", "CascadiaMono.ttf"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Fonts", "CascadiaMonoPL.ttf"),
+            };
+            var peFontSrc = Array.Find(peFontCandidates, File.Exists);
+            if (peFontSrc != null)
+            {
+                File.Copy(peFontSrc, peFontDst, overwrite: true);
+                _emit.Log(diskNumber, "WIN-INSTALL: staged WinPE Braille font to FirstBase\\Deploy\\Fonts\\cascadiamono.ttf");
+            }
+
             // fb-im front-end: cmd launcher at volume ROOT; PS backend + fb-dump backend under FirstBase\WUPayload\Tools\.
             var toolsDir = Path.Combine(firstBaseRoot, "WUPayload", "Tools");
             var imCmd = Path.Combine(ctx.ContentRoot, "Tools", "fb-im.cmd");
@@ -664,6 +681,7 @@ public sealed class BuildEngine
         ("FirstBaseSplashTechMenu.ps1", "FirstBase\\WUPayload\\FirstBaseSplashTechMenu.ps1"),
         ("Tools\\seal_command.txt", "FirstBase\\WUPayload\\Tools\\seal_command.txt"),
         ("Tools\\Show-SplashNow.cmd", "FirstBase\\WUPayload\\Tools\\Show-SplashNow.cmd"),
+        ("Deploy\\Fonts\\cascadiamono.ttf", "FirstBase\\Deploy\\Fonts\\cascadiamono.ttf"),
     };
 
     // WinPE optional components required for TechInstall.cmd and its helpers to run PowerShell

@@ -1,7 +1,7 @@
 {
   "name": "project-lonewolf-launcher",
   "author": "FirstBase | Joshua Meadors",
-  "version": "5.4.18",
+  "version": "5.4.19",
   "description": "Project LoneWolf Launcher — FirstBase Deployment Suite GUI",
   "copyright": "Copyright © 2026 FirstBase | Joshua Meadors",
   "main": "main.js",

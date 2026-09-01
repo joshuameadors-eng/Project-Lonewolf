@@ -28,10 +28,10 @@ $readme = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'README.md')
 
 # --- Version ---
 $lv = [string]$pkg.version
-if ($lv -eq '5.4.18') { Ok 'package.json version is 5.4.18' } else { Fail "package.json version is $lv (expected 5.4.18)" }
+if ($lv -eq '5.4.19') { Ok 'package.json version is 5.4.19' } else { Fail "package.json version is $lv (expected 5.4.19)" }
 if ($lv -eq [string]$verJson.launcherVersion) { Ok "package.json matches VERSION.json launcherVersion $lv" } else { Fail "package.json $($pkg.version) vs launcherVersion $($verJson.launcherVersion)" }
 $payloadVer = if ($verJson.PSObject.Properties['payloadVersion'] -and $verJson.payloadVersion) { [string]$verJson.payloadVersion } else { [string]$verJson.version }
-if ($payloadVer -eq '5.4.3') { Ok 'payloadVersion is 5.4.3 (script channel independent of launcher 5.4.18)' } else { Fail "payloadVersion unexpectedly $payloadVer" }
+if ($payloadVer -eq '5.4.3') { Ok 'payloadVersion is 5.4.3 (script channel independent of launcher 5.4.19)' } else { Fail "payloadVersion unexpectedly $payloadVer" }
 if ([string]$verJson.version -eq '5.4.3') { Ok 'VERSION.json product version matches payload 5.4.3' } else { Fail "product version unexpectedly $($verJson.version)" }
 
 # --- gitignore / README ---
