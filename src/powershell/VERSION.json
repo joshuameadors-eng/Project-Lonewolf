@@ -15,7 +15,7 @@
                           "ARM64":  {
                                         "wimBuildDate":  "",
                                         "payloadHash":  "",
-                                        "enabled":  false
+                                        "enabled":  true
                                     }
                       },
     "changelog":  [
